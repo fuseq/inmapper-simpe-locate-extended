@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <title>SimpleLocate Extended - Local Test</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>html,body,#map{height:100%;margin:0}</style>
+</head>
+<body>
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+  <!-- core + plugin (relative paths) -->
+  <script src="src/leaflet-simple-locate.js"></script>
+  <script src="src/plugin-base/leaflet-simple-locate-core.js"></script>
+  <script src="src/plugin-extended/leaflet-simple-locate-extended.js"></script>
+
+  <script>
+    const map = L.map('map').setView([41.2610757, 28.7423908], 17);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(map);
+
+    // Örnek geofence polygon (istediğinle değiştir)
+    const polygon = [
+      {lat: 41.262509293303935, lng: 28.73833537101746},
+      {lat: 41.26132778628279, lng: 28.73830854892731},
+      {lat: 41.26132375379901, lng: 28.739236593246464},
+      {lat: 41.259553469375234, lng: 28.739279508590702},
+      {lat: 41.2596139582453, lng: 28.745630979537967},
+      {lat: 41.26140037094814, lng: 28.74560415744782},
+      {lat: 41.261420533340846, lng: 28.746473193168644},
+      {lat: 41.26259800627894, lng: 28.746451735496525}
+    ];
+
+    // Başlat (plugin tek satırla başlatılabilir)
+    const ctl = L.simplelocate({
+      geofence: { polygon: polygon },
+      advancedFiltering: true,
+      settingsControl: true,
+      weiYePanel: true
+    }).addTo(map);
+
+    // İsteğe bağlı: settings paneli haritaya ekle
+    ctl.addSettingsControlToMap(map);
+    // İsteğe bağlı: wei-ye bilgi paneli ekle
+    ctl.addWeiYeInfoControlToMap(map);
+  </script>
+</body>
+</html>
