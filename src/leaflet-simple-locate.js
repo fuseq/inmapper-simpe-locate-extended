@@ -1,18 +1,165 @@
 /*
- * Leaflet.SimpleLocate v1.0.4 - 2024-6-15
+ * Leaflet.SimpleLocate Extended v1.1.0 - 2026-02-03
  *
- * Copyright 2024 mfhsieh
- * mfhsieh@gmail.com
+ * Based on original work by mfhsieh (v1.0.5)
+ * Extended with Wei Ye filtering, Geofence, Indoor optimizations
  *
  * Licensed under the MIT license.
  *
- * Demos:
- * https://mfhsieh.github.io/leaflet-simple-locate/
- *
- * Source:
- * git@github.com:mfhsieh/leaflet-simple-locate.git
+ * Original: https://github.com/mfhsieh/leaflet-simple-locate
  *
  */
+
+// =====================================================
+// CSS AUTO-INJECT - Plugin yüklendiğinde CSS otomatik eklenir
+// =====================================================
+(function() {
+    if (typeof document === 'undefined') return;
+    if (document.getElementById('leaflet-simple-locate-styles')) return;
+
+    var css = `
+/* Leaflet.SimpleLocate Styles - Auto-injected */
+:root {
+    --primary-rgb: 51, 51, 51;
+    --leaflet-simple-locate-orientation: 0deg;
+    --leaflet-simple-locate-circle-display: inline;
+}
+
+/* Firefox fix */
+@-moz-document url-prefix() {
+    .leaflet-simple-locate .fa,
+    .leaflet-simple-locate .fab,
+    .leaflet-simple-locate .far,
+    .leaflet-simple-locate .fas {
+        margin-top: .05rem;
+        margin-bottom: -.05rem;
+    }
+}
+
+/* Ana buton stili - Circular */
+.leaflet-simple-locate {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: 2.5rem;
+    height: 2.5rem;
+    padding: 0;
+    margin: 0;
+    font-size: 1.375rem;
+    color: rgba(var(--primary-rgb), 1);
+    background-color: rgba(255, 255, 255, 1) !important;
+    border: none !important;
+    border-radius: 2.5rem;
+    box-shadow: rgba(0, 0, 0, .2) 0 1px 4px;
+    cursor: pointer;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    text-size-adjust: none;
+    -webkit-text-size-adjust: none;
+}
+
+.leaflet-simple-locate:active {
+    background-color: #f0f0f0 !important;
+}
+
+.leaflet-simple-locate:active svg {
+    fill: rgba(var(--primary-rgb), 1);
+}
+
+.leaflet-simple-locate:focus {
+    outline: none;
+}
+
+.leaflet-simple-locate:focus-visible {
+    outline: none;
+}
+
+.leaflet-simple-locate svg {
+    fill: rgba(var(--primary-rgb), 1);
+    width: 1.375rem;
+    height: 1.375rem;
+}
+
+/* Konum ikonu stili */
+.leaflet-simple-locate-icon {
+    fill: rgba(var(--primary-rgb), 1);
+    pointer-events: none !important;
+    cursor: grab;
+    background: transparent !important;
+    border: none !important;
+}
+
+.leaflet-simple-locate-icon stop {
+    stop-color: rgba(var(--primary-rgb), 1);
+}
+
+.leaflet-simple-locate-icon .orientation {
+    transform: rotate(calc(-1 * var(--leaflet-simple-locate-orientation, 0deg)));
+}
+
+/* Doğruluk dairesi stili */
+.leaflet-simple-locate-circle {
+    display: var(--leaflet-simple-locate-circle-display);
+    fill: rgba(var(--primary-rgb), 1);
+    fill-opacity: .1;
+    stroke: rgba(var(--primary-rgb), 1);
+    stroke-width: 1;
+    stroke-opacity: .3;
+    pointer-events: none !important;
+    cursor: grab;
+}
+
+/* Yön göstergesi */
+.leaflet-simple-locate-orientation {
+    transform: rotate(var(--leaflet-simple-locate-orientation, 0deg));
+}
+
+#leaflet-simple-locate-icon-spot {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+/* Spinner animasyonu */
+.leaflet-simple-locate svg g {
+    transform-origin: center;
+}
+
+/* Extended plugin kontrolleri */
+.leaflet-control-simplelocate-settings,
+.leaflet-control-weiYe-info {
+    font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.leaflet-control-simplelocate-settings button:hover {
+    background: #e0e0e0 !important;
+}
+
+/* Responsive ayarlar */
+@media (max-width: 480px) {
+    .leaflet-simple-locate {
+        width: 2.75rem;
+        height: 2.75rem;
+    }
+    
+    .leaflet-simple-locate svg {
+        width: 1.5rem;
+        height: 1.5rem;
+    }
+}
+`;
+
+    var style = document.createElement('style');
+    style.id = 'leaflet-simple-locate-styles';
+    style.type = 'text/css';
+    style.appendChild(document.createTextNode(css));
+    document.head.appendChild(style);
+})();
+
+// =====================================================
+// PLUGIN CORE
+// =====================================================
 (function (factory) {
 
     if (typeof define === 'function' && define.amd) {  // eslint-disable-line no-undef
