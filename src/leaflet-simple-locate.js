@@ -1735,7 +1735,11 @@
             // ========== ALTITUDE İŞLEME ==========
             // Leaflet locationfound event'inde altitude bilgisi varsa işle
             if (this.options.enableAltitude && event.altitude !== undefined) {
-                this._processAltitude(event);
+                try {
+                    this._processAltitude(event);
+                } catch (e) {
+                    console.warn('⛰️ Altitude işleme hatası:', e.message);
+                }
             }
 
             // Marker'ı güncelle
@@ -1988,11 +1992,12 @@
             
             // ─── Low Pass Filtre ───
             if (!this._altitude.lowPassFilter && typeof LowPassFilter !== 'undefined') {
-                this._altitude.lowPassFilter = new LowPassFilter(this.options.altitudeLowPassTau);
+                this._altitude.lowPassFilter = new LowPassFilter(1.0, this.options.altitudeLowPassTau);
             }
             
             if (this._altitude.lowPassFilter) {
-                return this._altitude.lowPassFilter.apply(medianAltitude, Date.now() / 1000);
+                this._altitude.lowPassFilter.addSample(medianAltitude);
+                return this._altitude.lowPassFilter.lastOutput();
             }
             
             return medianAltitude;
