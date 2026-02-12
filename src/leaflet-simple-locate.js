@@ -136,23 +136,6 @@
     background: #e0e0e0 !important;
 }
 
-/* Hata popup stili */
-.leaflet-simple-locate-error-popup .leaflet-popup-content-wrapper {
-    background: #fff3cd;
-    border: 2px solid #ffc107;
-    border-radius: 8px;
-}
-
-.leaflet-simple-locate-error-popup .leaflet-popup-content {
-    margin: 0;
-    padding: 0;
-}
-
-.leaflet-simple-locate-error-popup .leaflet-popup-tip {
-    background: #fff3cd;
-    border: 1px solid #ffc107;
-}
-
 /* Responsive ayarlar */
 @media (max-width: 480px) {
     .leaflet-simple-locate {
@@ -263,31 +246,6 @@
             pdrMaxSteps: 100,               // PDR ile maksimum adım sayısı
             pdrAccuracyDecay: 0.5,          // Her adımda accuracy ne kadar artar (metre)
             pdrInitialAccuracy: 5,          // PDR başlangıç accuracy (metre)
-            
-            // ========== ALTITUDE NORMALİZASYON & KAT TESPİTİ ==========
-            enableAltitude: false,          // Altitude işleme aktif (varsayılan kapalı)
-            
-            // Geoid ondülasyonu: Elipsoid (WGS84) ile MSL arasındaki fark
-            // Android ham GPS altitude = elipsoid yüksekliği → MSL'e çevirmek için N çıkarılır
-            // iOS zaten MSL döndürür → düzeltme gerekmez
-            // Türkiye ortalaması ~36-40m, bölgeye göre ayarlanmalı
-            // https://geographiclib.sourceforge.io/cgi-bin/GeoidEval adresinden bulunabilir
-            geoidUndulation: 37.0,          // metre - Bina konumu için geoid ondülasyonu (N)
-            
-            // Altitude filtreleme
-            altitudeFilterEnabled: true,    // Altitude değerini filtrele (gürültü azaltma)
-            altitudeMedianWindow: 5,        // Altitude median filtre pencere boyutu
-            altitudeLowPassTau: 2.0,        // Altitude low-pass filtre tau (yavaş değişim)
-            altitudeMaxDelta: 10,           // Tek adımda max kabul edilebilir altitude değişimi (m)
-            altitudeMinAccuracy: 20,        // Bu değerin üstündeki altitudeAccuracy reddedilir (m)
-            
-            // Kat tespiti
-            enableFloorDetection: false,    // Kat tespiti aktif
-            floorHeight: 3.0,              // Kat yüksekliği (metre) - standart bina
-            groundFloorAltitude: null,      // Zemin kat rakımı (MSL metre) - KALİBRASYON GEREKLİ
-            groundFloorNumber: 0,           // Zemin kat numarası (0 veya 1)
-            floorHysteresis: 0.8,           // Kat değişimi için histerezis (metre) - titreşimi engeller
-            floors: null,                   // Manuel kat tanımları: [{floor: 0, name: "Zemin", minAlt: 1050, maxAlt: 1053}, ...]
 
             afterClick: null,
             afterMarkerAdd: null,
@@ -480,30 +438,11 @@
                 fallbackUsed: 0
             };
             
-            // Hata gösterimi kontrolü (sadece ilk hatada popup göster)
-            this._locationErrorShown = false;
-            
             // Geofence cache (hesaplama optimizasyonu)
             this._geofenceCache = {
                 isInside: null,
                 lastCheck: null,
                 checkInterval: 1000 // 1 saniye
-            };
-            
-            // ========== ALTITUDE & KAT TESPİTİ STATE ==========
-            this._altitude = {
-                raw: null,                  // Ham altitude (platformdan gelen)
-                normalized: null,           // Normalize edilmiş altitude (MSL)
-                filtered: null,             // Filtrelenmiş altitude
-                accuracy: null,             // Altitude accuracy
-                floor: null,                // Tespit edilen kat numarası
-                floorName: null,            // Kat adı
-                medianBuffer: [],           // Median filtre buffer'ı
-                lowPassFilter: null,        // LowPass filtre instance'ı
-                lastStableFloor: null,      // Son kararlı kat (histerezis için)
-                floorChangeTime: 0,         // Son kat değişim zamanı
-                sampleCount: 0,             // Toplam altitude örneği sayısı
-                platform: null              // Tespit edilen platform ('ios' | 'android' | 'unknown')
             };
             
             // ========== PEDESTRIAN DEAD RECKONING (PDR) STATE ==========
@@ -933,7 +872,7 @@
                 position.accuracy > this.options.maxAcceptableAccuracy) {
                 
                 this._locationStats.accuracyRejections++;
-                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy.toFixed(1)}m (max: ${this.options.maxAcceptableAccuracy}m) [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}]`);
+                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy}m (max: ${this.options.maxAcceptableAccuracy}m)`);
                 
                 // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
@@ -944,8 +883,8 @@
                     }
                 }
                 
-                // Fallback yoksa - null döndür (marker güncellenmeyecek)
-                // Ama ham veriyi kaydet (WeiYe panel teşhis için gösterebilsin)
+                // Fallback yoksa veya katı modda - null döndür (marker güncellenmeyecek)
+                console.warn(`🚫 Konum reddedildi (accuracy) - marker güncellenmeyecek`);
                 return null;
             }
             
@@ -954,15 +893,16 @@
             
             if (!geofenceResult.inside) {
                 this._locationStats.geofenceRejections++;
-                console.warn(`🚫 Geofence dışı: [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}] acc: ${position.accuracy.toFixed(1)}m`);
                 
                 // ═══ PDR AKTİVASYONU ═══
+                // Dışarıdan sinyal geliyor = iç mekan sinyali kesilmiş
+                // Son iç mekan konumundan PDR ile devam et
                 if (this.options.enableDeadReckoning && !this._pdr.active) {
                     console.log("🦶 Geofence dışı sinyal → PDR başlatılıyor");
                     this._startDeadReckoning();
                 }
                 
-                // PDR aktifse, PDR konumunu döndür
+                // PDR aktifse, PDR konumunu döndür (marker PDR ile güncelleniyor)
                 if (this._pdr.active) {
                     return {
                         latitude: this._pdr.currentLatitude,
@@ -982,11 +922,13 @@
                     }
                 }
                 
-                // Fallback yoksa - null döndür
+                // Fallback yoksa - null döndür (marker güncellenmeyecek)
+                console.warn(`🚫 Konum reddedildi (geofence) - marker güncellenmeyecek`);
                 return null;
             }
             
             // ═══ İÇ MEKAN SİNYALİ GERİ GELDİ → PDR DURDUR ═══
+            // Geofence içinden sinyal alınıyorsa PDR'a gerek yok
             if (this._pdr.active) {
                 console.log("🦶 İç mekan sinyali geri geldi → PDR durduruluyor");
                 this._stopDeadReckoning("iç mekan sinyali geri geldi");
@@ -1425,57 +1367,17 @@
                         this._watchGeolocation();
                         this._checkClickResult();
                     }).catch((error) => {
-                        var errorMsg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
-                        var errorCode = error && error.code ? error.code : 0;
-                        
-                        console.error('❌ Geolocation hatası [code:' + errorCode + ']:', errorMsg);
-                        
-                        // İzin durumunu tekrar kontrol et
-                        if (navigator.permissions && navigator.permissions.query) {
-                            navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
-                                if (result.state === 'granted' && errorCode === 1) {
-                                    console.error('⚠️ İZİN VERİLDİ ama hala "denied" hatası!');
-                                    console.error('💡 Bu tarayıcı cache sorunu olabilir.');
-                                    console.error('💡 Çözüm: Sayfayı yenileyin veya Safari\'yi tamamen kapatıp açın');
-                                    
-                                    // Kullanıcıya popup göster
-                                    if (this._map) {
-                                        var center = this._map.getCenter();
-                                        L.popup({
-                                            maxWidth: 350,
-                                            className: 'leaflet-simple-locate-error-popup'
-                                        })
-                                        .setLatLng(center)
-                                        .setContent(
-                                            '<div style="font-family:system-ui,-apple-system,sans-serif;padding:12px;">' +
-                                            '<div style="font-weight:600;color:#d32f2f;margin-bottom:8px;font-size:14px;">⚠️ İzin Verildi Ama Hata Alınıyor</div>' +
-                                            '<div style="color:#666;font-size:12px;line-height:1.6;margin-bottom:10px;">' +
-                                            'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor olabilir.' +
-                                            '</div>' +
-                                            '<div style="background:#fff3cd;padding:8px;border-radius:4px;font-size:11px;color:#856404;">' +
-                                            '<strong>Çözüm:</strong><br>' +
-                                            '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)<br>' +
-                                            '2. Safari\'yi tekrar açın<br>' +
-                                            '3. Sayfayı yenileyin' +
-                                            '</div>' +
-                                            '</div>'
-                                        )
-                                        .openOn(this._map);
-                                    }
-                                }
-                            }.bind(this)).catch(function() {});
-                        }
-                        
                         this._geolocation = false;
                         this._checkClickResult();
                     });
 
                     this._checkOrientation().then(() => {
+                        // console.log("_checkOrientation", new Date().toISOString(), "success!");
                         this._orientation = true;
                         this._watchOrientation();
                         this._checkClickResult();
-                    }).catch((error) => {
-                        console.warn('🧭 Orientation izni reddedildi veya desteklenmiyor:', error || '');
+                    }).catch(() => {
+                        // console.log("_checkOrientation", new Date().toISOString(), "failed!");
                         this._orientation = false;
                         this._checkClickResult();
                     });
@@ -1554,9 +1456,6 @@
                 checkInterval: 1000
             };
             
-            // Altitude sıfırla
-            this._resetAltitude();
-            
             // PDR durdur ve sıfırla
             this._stopDeadReckoning("filtreler sıfırlandı");
         },
@@ -1581,55 +1480,19 @@
         _checkGeolocation: function () {
             if (typeof navigator !== "object" || !("geolocation" in navigator) ||
                 typeof navigator.geolocation.getCurrentPosition !== "function" || typeof navigator.geolocation.watchPosition !== "function") {
-                console.error('❌ Geolocation API desteklenmiyor');
-                return Promise.reject(new Error('Geolocation API desteklenmiyor'));
+                return Promise.reject();
             }
 
-            // İzin durumunu kontrol et (eğer API mevcutsa)
-            var permissionCheck = Promise.resolve();
-            if (navigator.permissions && navigator.permissions.query) {
-                permissionCheck = navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
-                    console.log('🔍 Buton tıklanmadan önce izin durumu:', result.state);
-                    if (result.state === 'denied') {
-                        console.error('❌ İzin REDDEDİLDİ - Tarayıcı ayarlarından izin verin');
-                    } else if (result.state === 'granted') {
-                        console.log('✅ İzin VERİLDİ - Konum alınmaya çalışılıyor...');
-                    }
-                    return result.state;
-                }).catch(function(err) {
-                    console.warn('⚠️ İzin durumu kontrol edilemedi:', err);
-                    return 'unknown';
-                });
-            }
-
-            return permissionCheck.then((permissionState) => {
-                return new Promise((resolve, reject) => {
-                    navigator.geolocation.getCurrentPosition(
-                        (position) => {
-                            console.log('✅ Konum başarıyla alındı!');
-                            resolve(position);
-                        },
-                        (error) => {
-                            var errorMsg = error.message || 'Bilinmeyen hata';
-                            var errorCode = error.code || 0;
-                            
-                            console.error('❌ getCurrentPosition hatası [code:' + errorCode + ']:', errorMsg);
-                            
-                            // İzin verilmiş ama hala hata alınıyorsa
-                            if (permissionState === 'granted' && errorCode === 1) {
-                                console.error('⚠️ ÇELİŞKİ: İzin VERİLDİ ama hala "denied" hatası alınıyor!');
-                                console.error('💡 Bu genellikle tarayıcı cache sorunu. Çözüm:');
-                                console.error('   1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)');
-                                console.error('   2. Safari\'yi tekrar açın');
-                                console.error('   3. Sayfayı yenileyin (F5)');
-                                console.error('   4. Veya tarayıcı cache\'ini temizleyin');
-                            }
-                            
-                            reject(error);
-                        },
-                        { maximumAge: 0, enableHighAccuracy: true, timeout: 10000 }
-                    );
-                });
+            return new Promise((resolve, reject) => {
+                navigator.geolocation.getCurrentPosition(
+                    (position) => {
+                        resolve(position);
+                    },
+                    (error) => {
+                        reject(error);
+                    },
+                    { maximumAge: 0, enableHighAccuracy: true }
+                );
             });
         },
 
@@ -1647,41 +1510,6 @@
         },
 
         _watchGeolocation: function () {
-            console.log('📍 Geolocation izleme başlatılıyor...');
-            console.log('📍 Platform:', this._isIOS ? 'iOS' : 'Android/Diğer');
-            console.log('📍 Geofence:', this.options.geofence ? 'aktif' : 'yok');
-            console.log('📍 maxAcceptableAccuracy:', this.options.maxAcceptableAccuracy, 'm');
-            
-            // İzin durumunu kontrol et (eğer API mevcutsa)
-            if (navigator.permissions && navigator.permissions.query) {
-                navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
-                    console.log('📍 Geolocation izin durumu:', result.state);
-                    if (result.state === 'denied') {
-                        console.error('❌ İzin durumu: REDDEDİLDİ - Tarayıcı ayarlarından izin verin');
-                    } else if (result.state === 'prompt') {
-                        console.warn('⚠️ İzin durumu: İSTENECEK - Kullanıcıdan izin istenecek');
-                    } else if (result.state === 'granted') {
-                        console.log('✅ İzin durumu: VERİLDİ');
-                    }
-                    
-                    // İzin durumu değiştiğinde dinle
-                    result.onchange = function() {
-                        console.log('📍 İzin durumu değişti:', result.state);
-                        if (result.state === 'granted') {
-                            console.log('✅ İzin verildi! Sayfayı yenileyin veya butona tekrar tıklayın.');
-                        }
-                    };
-                }).catch(function(err) {
-                    console.warn('⚠️ İzin durumu kontrol edilemedi:', err);
-                });
-            }
-            
-            // HTTPS kontrolü (iOS için kritik)
-            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                console.error('❌ HTTPS gerekli! iOS\'ta geolocation sadece HTTPS\'te çalışır.');
-                console.error('📍 Mevcut protokol:', location.protocol);
-            }
-            
             this._map.locate({ watch: true, enableHighAccuracy: true });
             this._map.on("locationfound", this._onLocationFound, this);
             this._map.on("locationerror", this._onLocationError, this);
@@ -1690,167 +1518,7 @@
         },
         
         _onLocationError: function (error) {
-            var msg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
-            var code = error && error.code ? error.code : 0;
-            
-            // Hata koduna göre Türkçe açıklama
-            var userFriendlyMsg = msg;
-            var helpText = '';
-            
-            if (code === 1 || msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission')) {
-                // İzin durumunu kontrol et
-                var self = this;
-                var isPermissionGranted = false;
-                
-                if (navigator.permissions && navigator.permissions.query) {
-                    navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
-                        console.log('🔍 İzin durumu tekrar kontrol edildi:', result.state);
-                        if (result.state === 'granted') {
-                            isPermissionGranted = true;
-                            console.warn('⚠️ ÇELİŞKİ: İzin VERİLDİ ama hala "denied" hatası alınıyor!');
-                            console.warn('💡 Bu tarayıcı cache sorunu. Çözüm:');
-                            console.warn('   1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)');
-                            console.warn('   2. Safari\'yi tekrar açın');
-                            console.warn('   3. Sayfayı yenileyin');
-                            
-                            // Popup mesajını güncelle
-                            userFriendlyMsg = '⚠️ İzin Verildi Ama Hata Alınıyor';
-                            if (self._isIOS) {
-                                helpText = 'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor.\n\n' +
-                                          'Çözüm:\n' +
-                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
-                                          '2. Safari\'yi tekrar açın\n' +
-                                          '3. Sayfayı yenileyin';
-                            } else {
-                                helpText = 'İzin verilmiş görünüyor ama tarayıcı cache sorunu olabilir.\n\n' +
-                                          'Çözüm: Sayfayı yenileyin (F5) veya tarayıcı cache\'ini temizleyin';
-                            }
-                        } else {
-                            userFriendlyMsg = '❌ Konum izni reddedildi';
-                            if (self._isIOS) {
-                                helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver\n\n' +
-                                          '💡 İzin verdikten sonra:\n' +
-                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
-                                          '2. Safari\'yi tekrar açın\n' +
-                                          '3. Sayfayı yenileyin';
-                            } else {
-                                helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin\n\n' +
-                                          '💡 İzin verdikten sonra sayfayı yenileyin (F5)';
-                            }
-                        }
-                    }).catch(function() {
-                        userFriendlyMsg = '❌ Konum izni reddedildi';
-                        if (self._isIOS) {
-                            helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver';
-                        } else {
-                            helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin';
-                        }
-                    });
-                } else {
-                    userFriendlyMsg = '❌ Konum izni reddedildi';
-                    if (this._isIOS) {
-                        helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver';
-                    } else {
-                        helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin';
-                    }
-                }
-                
-                // HTTPS kontrolü
-                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
-                    helpText += '\n\n⚠️ ÖNEMLİ: iOS\'ta geolocation sadece HTTPS\'te çalışır!\n' +
-                               'Mevcut protokol: ' + location.protocol;
-                }
-            } else if (code === 2 || msg.toLowerCase().includes('unavailable') || msg.toLowerCase().includes('timeout')) {
-                userFriendlyMsg = '⚠️ Konum servisi kullanılamıyor';
-                helpText = 'GPS sinyali alınamıyor. Açık alana çıkın veya internet bağlantınızı kontrol edin.';
-            } else if (code === 3 || msg.toLowerCase().includes('timeout')) {
-                userFriendlyMsg = '⏱️ Konum alınamadı (zaman aşımı)';
-                helpText = 'GPS sinyali çok zayıf. Lütfen bekleyin veya açık alana çıkın.';
-            }
-            
-            console.error('📍 Konum hatası [code:' + code + ']:', msg);
-            if (helpText) {
-                console.error('💡 Çözüm:', helpText);
-            }
-            
-            // Kullanıcıya görsel uyarı göster (sadece ilk hatada)
-            var self = this;
-            if (!this._locationErrorShown) {
-                this._locationErrorShown = true;
-                
-                // İzin durumunu kontrol et ve popup'ı göster
-                var showPopup = function() {
-                    var center = self._map.getCenter();
-                    var popup = L.popup({
-                        maxWidth: 350,
-                        className: 'leaflet-simple-locate-error-popup'
-                    })
-                    .setLatLng(center)
-                    .setContent(
-                        '<div style="font-family:system-ui,-apple-system,sans-serif;padding:12px;">' +
-                        '<div style="font-weight:600;color:#d32f2f;margin-bottom:8px;font-size:14px;">' + userFriendlyMsg + '</div>' +
-                        (helpText ? '<div style="color:#666;font-size:12px;line-height:1.6;margin-top:6px;white-space:pre-line;">' + helpText.replace(/\n/g, '<br>') + '</div>' : '') +
-                        '<div style="margin-top:10px;font-size:11px;color:#999;">Hata kodu: ' + code + '</div>' +
-                        '</div>'
-                    )
-                    .openOn(self._map);
-                    
-                    // 15 saniye sonra otomatik kapat
-                    setTimeout(function() {
-                        if (popup && popup.isOpen()) {
-                            popup.close();
-                        }
-                    }, 15000);
-                };
-                
-                // İzin durumu kontrolü asenkron olduğu için, kontrol tamamlandıktan sonra popup göster
-                if (code === 1 && navigator.permissions && navigator.permissions.query) {
-                    navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
-                        if (result.state === 'granted') {
-                            userFriendlyMsg = '⚠️ İzin Verildi Ama Hata Alınıyor';
-                            if (self._isIOS) {
-                                helpText = 'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor.\n\n' +
-                                          'Çözüm:\n' +
-                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
-                                          '2. Safari\'yi tekrar açın\n' +
-                                          '3. Sayfayı yenileyin';
-                            } else {
-                                helpText = 'İzin verilmiş görünüyor ama tarayıcı cache sorunu olabilir.\n\n' +
-                                          'Çözüm: Sayfayı yenileyin (F5) veya tarayıcı cache\'ini temizleyin';
-                            }
-                        }
-                        showPopup();
-                    }).catch(function() {
-                        showPopup();
-                    });
-                } else {
-                    showPopup();
-                }
-            }
-            
-            // Callback'i çağır - hata bilgisi ile
-            if (this.options.afterDeviceMove) {
-                this.options.afterDeviceMove({
-                    lat: this._latitude,
-                    lng: this._longitude,
-                    accuracy: this._accuracy,
-                    angle: this._angle,
-                    isFiltered: false,
-                    isRejected: true,
-                    isJump: false,
-                    filterStats: this._weiYeState ? this._weiYeState.filteringStats : {},
-                    confidence: 0,
-                    locationStats: this._locationStats,
-                    isFallback: false,
-                    isIndoorMode: this.options.indoorMode,
-                    locationError: { 
-                        code: code, 
-                        message: msg,
-                        userFriendly: userFriendlyMsg,
-                        helpText: helpText
-                    }
-                });
-            }
+            // Hata sessizce işlenir
         },
 
         _unwatchGeolocation: function () {
@@ -1895,14 +1563,6 @@
         },
 
         _onLocationFound: function (event) {
-            // Ham GPS verisini logla (teşhis için)
-            console.log('📡 Ham GPS:', 
-                event.latitude ? event.latitude.toFixed(6) : '?', 
-                event.longitude ? event.longitude.toFixed(6) : '?',
-                'acc:', event.accuracy ? event.accuracy.toFixed(1) + 'm' : '?',
-                'alt:', event.altitude !== undefined && event.altitude !== null ? event.altitude.toFixed(1) + 'm' : 'yok'
-            );
-            
             // Wei Ye algoritması ile konumu filtrele
             const filteredPosition = this._applyWeiYeFilter(event);
             
@@ -1923,12 +1583,12 @@
                     this._circle = undefined;
                 }
 
-                // Callback'i çağır - ham GPS verisini de ekle (WeiYe panel teşhis bilgisi gösterebilsin)
+                // Callback'i çağır (istatistikler için) - ham konum yerine son geçerli/filtrelenmiş bilgileri ver
                 if (this.options.afterDeviceMove) {
                     this.options.afterDeviceMove({
-                        lat: this._latitude || event.latitude,
-                        lng: this._longitude || event.longitude,
-                        accuracy: this._accuracy || event.accuracy,
+                        lat: this._latitude,
+                        lng: this._longitude,
+                        accuracy: this._accuracy,
                         angle: this._angle,
                         isFiltered: true,
                         isRejected: true,
@@ -1938,15 +1598,7 @@
                         locationStats: this._locationStats,
                         isFallback: false,
                         isIndoorMode: this.options.indoorMode,
-                        consecutiveBadLocations: this._consecutiveBadLocations,
-                        // Ham GPS verisi (teşhis için)
-                        rawGPS: {
-                            lat: event.latitude,
-                            lng: event.longitude,
-                            accuracy: event.accuracy,
-                            altitude: event.altitude,
-                            altitudeAccuracy: event.altitudeAccuracy
-                        }
+                        consecutiveBadLocations: this._consecutiveBadLocations
                     });
                 }
                 return;
@@ -2035,16 +1687,6 @@
             this._latitude = filteredPosition.latitude;
             this._longitude = filteredPosition.longitude;
             this._accuracy = filteredPosition.accuracy;
-            
-            // ========== ALTITUDE İŞLEME ==========
-            // Leaflet locationfound event'inde altitude bilgisi varsa işle
-            if (this.options.enableAltitude && event.altitude !== undefined) {
-                try {
-                    this._processAltitude(event);
-                } catch (e) {
-                    console.warn('⛰️ Altitude işleme hatası:', e.message);
-                }
-            }
 
             // Marker'ı güncelle
             this._updateMarker();
@@ -2194,231 +1836,6 @@
             while (delta > 180) delta -= 360;
             while (delta < -180) delta += 360;
             return delta;
-        },
-
-        // ════════════════════════════════════════════════════════
-        // ALTITUDE NORMALİZASYON & KAT TESPİTİ
-        // iOS ve Android arasındaki altitude farkını normalize eder
-        // ve iç mekanda kat tespiti yapar
-        // ════════════════════════════════════════════════════════
-        
-        // Altitude verisini işle (her locationfound'da çağrılır)
-        _processAltitude: function (position) {
-            if (!this.options.enableAltitude) return;
-            
-            // Leaflet locationfound event'inde altitude bilgisi
-            var rawAltitude = position.altitude;
-            var altitudeAccuracy = position.altitudeAccuracy;
-            
-            // Altitude yoksa çık
-            if (rawAltitude === null || rawAltitude === undefined) return;
-            
-            this._altitude.raw = rawAltitude;
-            this._altitude.accuracy = altitudeAccuracy;
-            this._altitude.sampleCount++;
-            
-            // Platform tespiti (ilk seferde)
-            if (!this._altitude.platform) {
-                this._altitude.platform = this._isIOS ? 'ios' : 'android';
-            }
-            
-            // ═══ ADIM 1: ACCURACY KONTROLÜ ═══
-            if (altitudeAccuracy !== null && altitudeAccuracy !== undefined &&
-                altitudeAccuracy > this.options.altitudeMinAccuracy) {
-                // Accuracy çok kötü, bu değeri kullanma
-                return;
-            }
-            
-            // ═══ ADIM 2: PLATFORM NORMALİZASYONU (MSL'e çevir) ═══
-            var mslAltitude = this._normalizeAltitudeToMSL(rawAltitude);
-            this._altitude.normalized = mslAltitude;
-            
-            // ═══ ADIM 3: ANİ SIÇRAMA KONTROLÜ ═══
-            if (this._altitude.filtered !== null) {
-                var altDelta = Math.abs(mslAltitude - this._altitude.filtered);
-                if (altDelta > this.options.altitudeMaxDelta) {
-                    // Ani sıçrama - muhtemelen GPS hatası, yoksay
-                    console.warn('⛰️ Altitude sıçraması tespit edildi: ' + altDelta.toFixed(1) + 'm → yoksayıldı');
-                    return;
-                }
-            }
-            
-            // ═══ ADIM 4: FİLTRELEME ═══
-            var filteredAltitude;
-            if (this.options.altitudeFilterEnabled) {
-                filteredAltitude = this._filterAltitude(mslAltitude);
-            } else {
-                filteredAltitude = mslAltitude;
-            }
-            
-            this._altitude.filtered = filteredAltitude;
-            
-            // ═══ ADIM 5: KAT TESPİTİ ═══
-            if (this.options.enableFloorDetection) {
-                this._detectFloor(filteredAltitude);
-            }
-        },
-        
-        // Android altitude'unu MSL'e normalize et
-        // iOS zaten MSL döndürür, Android WGS84 elipsoid döndürür
-        _normalizeAltitudeToMSL: function (rawAltitude) {
-            if (this._altitude.platform === 'ios') {
-                // iOS: Core Location zaten MSL (Mean Sea Level) döndürür
-                return rawAltitude;
-            }
-            
-            // Android: Elipsoid yüksekliği → MSL'e çevir
-            // MSL = Elipsoid Yüksekliği - Geoid Ondülasyonu (N)
-            var N = this.options.geoidUndulation;
-            return rawAltitude - N;
-        },
-        
-        // Altitude filtreleme (Median + LowPass)
-        _filterAltitude: function (altitude) {
-            // ─── Median Filtre ───
-            var buffer = this._altitude.medianBuffer;
-            var windowSize = this.options.altitudeMedianWindow;
-            
-            buffer.push(altitude);
-            if (buffer.length > windowSize) {
-                buffer.shift();
-            }
-            
-            // Median hesapla
-            var sorted = buffer.slice().sort(function (a, b) { return a - b; });
-            var medianAltitude;
-            var mid = Math.floor(sorted.length / 2);
-            if (sorted.length % 2 === 0) {
-                medianAltitude = (sorted[mid - 1] + sorted[mid]) / 2;
-            } else {
-                medianAltitude = sorted[mid];
-            }
-            
-            // ─── Low Pass Filtre ───
-            if (!this._altitude.lowPassFilter && typeof LowPassFilter !== 'undefined') {
-                this._altitude.lowPassFilter = new LowPassFilter(1.0, this.options.altitudeLowPassTau);
-            }
-            
-            if (this._altitude.lowPassFilter) {
-                this._altitude.lowPassFilter.addSample(medianAltitude);
-                return this._altitude.lowPassFilter.lastOutput();
-            }
-            
-            return medianAltitude;
-        },
-        
-        // Kat tespiti
-        _detectFloor: function (altitude) {
-            var floor = null;
-            var floorName = null;
-            
-            // ─── Yöntem 1: Manuel kat tanımları (öncelikli) ───
-            if (this.options.floors && this.options.floors.length > 0) {
-                for (var i = 0; i < this.options.floors.length; i++) {
-                    var f = this.options.floors[i];
-                    if (altitude >= f.minAlt && altitude < f.maxAlt) {
-                        floor = f.floor;
-                        floorName = f.name || ('Kat ' + f.floor);
-                        break;
-                    }
-                }
-            }
-            // ─── Yöntem 2: Otomatik hesaplama (groundFloorAltitude + floorHeight) ───
-            else if (this.options.groundFloorAltitude !== null) {
-                var relativeHeight = altitude - this.options.groundFloorAltitude;
-                var rawFloor = relativeHeight / this.options.floorHeight;
-                floor = Math.round(rawFloor) + this.options.groundFloorNumber;
-                floorName = 'Kat ' + floor;
-            }
-            
-            if (floor === null) return;
-            
-            // ─── Histerezis: Küçük dalgalanmalarda kat değişimini engelle ───
-            if (this._altitude.lastStableFloor !== null && floor !== this._altitude.lastStableFloor) {
-                // Yeni katla eski kat arasındaki altitude farkı yeterli mi?
-                var expectedAltForNewFloor;
-                if (this.options.groundFloorAltitude !== null) {
-                    expectedAltForNewFloor = this.options.groundFloorAltitude + 
-                        (floor - this.options.groundFloorNumber) * this.options.floorHeight;
-                    var distFromBoundary = Math.abs(altitude - expectedAltForNewFloor);
-                    
-                    // Kat sınırına yeterince yaklaşmadıysa kat değiştirme
-                    if (distFromBoundary > (this.options.floorHeight / 2 - this.options.floorHysteresis)) {
-                        // Histerezis eşiğini aştı → kat değiştir
-                    } else {
-                        // Sınırda salınım - önceki katı koru
-                        floor = this._altitude.lastStableFloor;
-                        floorName = 'Kat ' + floor;
-                    }
-                }
-                
-                // Minimum süre kontrolü (çok hızlı kat değişimini engelle)
-                var now = Date.now();
-                if (now - this._altitude.floorChangeTime < 3000) {
-                    // Son 3 saniyede zaten kat değişimi oldu, bekle
-                    floor = this._altitude.lastStableFloor;
-                    floorName = 'Kat ' + floor;
-                }
-            }
-            
-            // Kat değiştiyse bildir
-            if (this._altitude.floor !== floor) {
-                var prevFloor = this._altitude.floor;
-                this._altitude.floor = floor;
-                this._altitude.floorName = floorName;
-                this._altitude.lastStableFloor = floor;
-                this._altitude.floorChangeTime = Date.now();
-                
-                console.log('🏢 Kat değişimi: ' + (prevFloor !== null ? prevFloor : '?') + 
-                           ' → ' + floor + ' (altitude: ' + altitude.toFixed(1) + 'm MSL)');
-            }
-        },
-        
-        // Altitude verilerini sıfırla
-        _resetAltitude: function () {
-            this._altitude.raw = null;
-            this._altitude.normalized = null;
-            this._altitude.filtered = null;
-            this._altitude.accuracy = null;
-            this._altitude.floor = null;
-            this._altitude.floorName = null;
-            this._altitude.medianBuffer = [];
-            this._altitude.lastStableFloor = null;
-            this._altitude.sampleCount = 0;
-            if (this._altitude.lowPassFilter && this._altitude.lowPassFilter.reset) {
-                this._altitude.lowPassFilter.reset();
-            }
-        },
-        
-        // Dışarıdan altitude verilerini sorgula
-        getAltitude: function () {
-            return {
-                raw: this._altitude.raw,
-                normalized: this._altitude.normalized,
-                filtered: this._altitude.filtered,
-                accuracy: this._altitude.accuracy,
-                floor: this._altitude.floor,
-                floorName: this._altitude.floorName,
-                platform: this._altitude.platform,
-                sampleCount: this._altitude.sampleCount
-            };
-        },
-        
-        // Zemin kat kalibrasyonu (cihaz zemin kattayken çağrılır)
-        calibrateGroundFloor: function () {
-            if (this._altitude.filtered === null) {
-                console.warn('⛰️ Kalibrasyon yapılamadı: Henüz altitude verisi yok');
-                return null;
-            }
-            
-            var groundAlt = this._altitude.filtered;
-            this.options.groundFloorAltitude = groundAlt;
-            this._altitude.floor = this.options.groundFloorNumber;
-            this._altitude.floorName = 'Kat ' + this.options.groundFloorNumber;
-            this._altitude.lastStableFloor = this.options.groundFloorNumber;
-            
-            console.log('⛰️ Zemin kat kalibre edildi: ' + groundAlt.toFixed(2) + 'm MSL');
-            return groundAlt;
         },
 
         // ════════════════════════════════════════════════════════
@@ -2703,14 +2120,7 @@
                     // ========== PDR BİLGİLERİ ==========
                     isPDR: this._pdr.active,
                     pdrStepCount: this._pdr.stepCount,
-                    pdrAccuracy: this._pdr.currentAccuracy,
-                    // ========== ALTITUDE & KAT BİLGİLERİ ==========
-                    altitude: this._altitude.filtered,
-                    altitudeRaw: this._altitude.raw,
-                    altitudeAccuracy: this._altitude.accuracy,
-                    altitudePlatform: this._altitude.platform,
-                    floor: this._altitude.floor,
-                    floorName: this._altitude.floorName
+                    pdrAccuracy: this._pdr.currentAccuracy
                 });
             }
 

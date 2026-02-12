@@ -111,6 +111,3 @@
 
     return LowPassFilter;
 }));
-
-
-
