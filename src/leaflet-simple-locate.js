@@ -136,6 +136,23 @@
     background: #e0e0e0 !important;
 }
 
+/* Hata popup stili */
+.leaflet-simple-locate-error-popup .leaflet-popup-content-wrapper {
+    background: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 8px;
+}
+
+.leaflet-simple-locate-error-popup .leaflet-popup-content {
+    margin: 0;
+    padding: 0;
+}
+
+.leaflet-simple-locate-error-popup .leaflet-popup-tip {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+}
+
 /* Responsive ayarlar */
 @media (max-width: 480px) {
     .leaflet-simple-locate {
@@ -462,6 +479,9 @@
                 accuracyRejections: 0,
                 fallbackUsed: 0
             };
+            
+            // Hata gösterimi kontrolü (sadece ilk hatada popup göster)
+            this._locationErrorShown = false;
             
             // Geofence cache (hesaplama optimizasyonu)
             this._geofenceCache = {
@@ -1405,7 +1425,47 @@
                         this._watchGeolocation();
                         this._checkClickResult();
                     }).catch((error) => {
-                        console.error('❌ Geolocation hatası:', error && error.message ? error.message : error);
+                        var errorMsg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
+                        var errorCode = error && error.code ? error.code : 0;
+                        
+                        console.error('❌ Geolocation hatası [code:' + errorCode + ']:', errorMsg);
+                        
+                        // İzin durumunu tekrar kontrol et
+                        if (navigator.permissions && navigator.permissions.query) {
+                            navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
+                                if (result.state === 'granted' && errorCode === 1) {
+                                    console.error('⚠️ İZİN VERİLDİ ama hala "denied" hatası!');
+                                    console.error('💡 Bu tarayıcı cache sorunu olabilir.');
+                                    console.error('💡 Çözüm: Sayfayı yenileyin veya Safari\'yi tamamen kapatıp açın');
+                                    
+                                    // Kullanıcıya popup göster
+                                    if (this._map) {
+                                        var center = this._map.getCenter();
+                                        L.popup({
+                                            maxWidth: 350,
+                                            className: 'leaflet-simple-locate-error-popup'
+                                        })
+                                        .setLatLng(center)
+                                        .setContent(
+                                            '<div style="font-family:system-ui,-apple-system,sans-serif;padding:12px;">' +
+                                            '<div style="font-weight:600;color:#d32f2f;margin-bottom:8px;font-size:14px;">⚠️ İzin Verildi Ama Hata Alınıyor</div>' +
+                                            '<div style="color:#666;font-size:12px;line-height:1.6;margin-bottom:10px;">' +
+                                            'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor olabilir.' +
+                                            '</div>' +
+                                            '<div style="background:#fff3cd;padding:8px;border-radius:4px;font-size:11px;color:#856404;">' +
+                                            '<strong>Çözüm:</strong><br>' +
+                                            '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)<br>' +
+                                            '2. Safari\'yi tekrar açın<br>' +
+                                            '3. Sayfayı yenileyin' +
+                                            '</div>' +
+                                            '</div>'
+                                        )
+                                        .openOn(this._map);
+                                    }
+                                }
+                            }.bind(this)).catch(function() {});
+                        }
+                        
                         this._geolocation = false;
                         this._checkClickResult();
                     });
@@ -1521,19 +1581,55 @@
         _checkGeolocation: function () {
             if (typeof navigator !== "object" || !("geolocation" in navigator) ||
                 typeof navigator.geolocation.getCurrentPosition !== "function" || typeof navigator.geolocation.watchPosition !== "function") {
-                return Promise.reject();
+                console.error('❌ Geolocation API desteklenmiyor');
+                return Promise.reject(new Error('Geolocation API desteklenmiyor'));
             }
 
-            return new Promise((resolve, reject) => {
-                navigator.geolocation.getCurrentPosition(
-                    (position) => {
-                        resolve(position);
-                    },
-                    (error) => {
-                        reject(error);
-                    },
-                    { maximumAge: 0, enableHighAccuracy: true }
-                );
+            // İzin durumunu kontrol et (eğer API mevcutsa)
+            var permissionCheck = Promise.resolve();
+            if (navigator.permissions && navigator.permissions.query) {
+                permissionCheck = navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
+                    console.log('🔍 Buton tıklanmadan önce izin durumu:', result.state);
+                    if (result.state === 'denied') {
+                        console.error('❌ İzin REDDEDİLDİ - Tarayıcı ayarlarından izin verin');
+                    } else if (result.state === 'granted') {
+                        console.log('✅ İzin VERİLDİ - Konum alınmaya çalışılıyor...');
+                    }
+                    return result.state;
+                }).catch(function(err) {
+                    console.warn('⚠️ İzin durumu kontrol edilemedi:', err);
+                    return 'unknown';
+                });
+            }
+
+            return permissionCheck.then((permissionState) => {
+                return new Promise((resolve, reject) => {
+                    navigator.geolocation.getCurrentPosition(
+                        (position) => {
+                            console.log('✅ Konum başarıyla alındı!');
+                            resolve(position);
+                        },
+                        (error) => {
+                            var errorMsg = error.message || 'Bilinmeyen hata';
+                            var errorCode = error.code || 0;
+                            
+                            console.error('❌ getCurrentPosition hatası [code:' + errorCode + ']:', errorMsg);
+                            
+                            // İzin verilmiş ama hala hata alınıyorsa
+                            if (permissionState === 'granted' && errorCode === 1) {
+                                console.error('⚠️ ÇELİŞKİ: İzin VERİLDİ ama hala "denied" hatası alınıyor!');
+                                console.error('💡 Bu genellikle tarayıcı cache sorunu. Çözüm:');
+                                console.error('   1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)');
+                                console.error('   2. Safari\'yi tekrar açın');
+                                console.error('   3. Sayfayı yenileyin (F5)');
+                                console.error('   4. Veya tarayıcı cache\'ini temizleyin');
+                            }
+                            
+                            reject(error);
+                        },
+                        { maximumAge: 0, enableHighAccuracy: true, timeout: 10000 }
+                    );
+                });
             });
         },
 
@@ -1556,6 +1652,36 @@
             console.log('📍 Geofence:', this.options.geofence ? 'aktif' : 'yok');
             console.log('📍 maxAcceptableAccuracy:', this.options.maxAcceptableAccuracy, 'm');
             
+            // İzin durumunu kontrol et (eğer API mevcutsa)
+            if (navigator.permissions && navigator.permissions.query) {
+                navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
+                    console.log('📍 Geolocation izin durumu:', result.state);
+                    if (result.state === 'denied') {
+                        console.error('❌ İzin durumu: REDDEDİLDİ - Tarayıcı ayarlarından izin verin');
+                    } else if (result.state === 'prompt') {
+                        console.warn('⚠️ İzin durumu: İSTENECEK - Kullanıcıdan izin istenecek');
+                    } else if (result.state === 'granted') {
+                        console.log('✅ İzin durumu: VERİLDİ');
+                    }
+                    
+                    // İzin durumu değiştiğinde dinle
+                    result.onchange = function() {
+                        console.log('📍 İzin durumu değişti:', result.state);
+                        if (result.state === 'granted') {
+                            console.log('✅ İzin verildi! Sayfayı yenileyin veya butona tekrar tıklayın.');
+                        }
+                    };
+                }).catch(function(err) {
+                    console.warn('⚠️ İzin durumu kontrol edilemedi:', err);
+                });
+            }
+            
+            // HTTPS kontrolü (iOS için kritik)
+            if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                console.error('❌ HTTPS gerekli! iOS\'ta geolocation sadece HTTPS\'te çalışır.');
+                console.error('📍 Mevcut protokol:', location.protocol);
+            }
+            
             this._map.locate({ watch: true, enableHighAccuracy: true });
             this._map.on("locationfound", this._onLocationFound, this);
             this._map.on("locationerror", this._onLocationError, this);
@@ -1566,7 +1692,141 @@
         _onLocationError: function (error) {
             var msg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
             var code = error && error.code ? error.code : 0;
-            console.warn('📍 Konum hatası [code:' + code + ']:', msg);
+            
+            // Hata koduna göre Türkçe açıklama
+            var userFriendlyMsg = msg;
+            var helpText = '';
+            
+            if (code === 1 || msg.toLowerCase().includes('denied') || msg.toLowerCase().includes('permission')) {
+                // İzin durumunu kontrol et
+                var self = this;
+                var isPermissionGranted = false;
+                
+                if (navigator.permissions && navigator.permissions.query) {
+                    navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
+                        console.log('🔍 İzin durumu tekrar kontrol edildi:', result.state);
+                        if (result.state === 'granted') {
+                            isPermissionGranted = true;
+                            console.warn('⚠️ ÇELİŞKİ: İzin VERİLDİ ama hala "denied" hatası alınıyor!');
+                            console.warn('💡 Bu tarayıcı cache sorunu. Çözüm:');
+                            console.warn('   1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)');
+                            console.warn('   2. Safari\'yi tekrar açın');
+                            console.warn('   3. Sayfayı yenileyin');
+                            
+                            // Popup mesajını güncelle
+                            userFriendlyMsg = '⚠️ İzin Verildi Ama Hata Alınıyor';
+                            if (self._isIOS) {
+                                helpText = 'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor.\n\n' +
+                                          'Çözüm:\n' +
+                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
+                                          '2. Safari\'yi tekrar açın\n' +
+                                          '3. Sayfayı yenileyin';
+                            } else {
+                                helpText = 'İzin verilmiş görünüyor ama tarayıcı cache sorunu olabilir.\n\n' +
+                                          'Çözüm: Sayfayı yenileyin (F5) veya tarayıcı cache\'ini temizleyin';
+                            }
+                        } else {
+                            userFriendlyMsg = '❌ Konum izni reddedildi';
+                            if (self._isIOS) {
+                                helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver\n\n' +
+                                          '💡 İzin verdikten sonra:\n' +
+                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
+                                          '2. Safari\'yi tekrar açın\n' +
+                                          '3. Sayfayı yenileyin';
+                            } else {
+                                helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin\n\n' +
+                                          '💡 İzin verdikten sonra sayfayı yenileyin (F5)';
+                            }
+                        }
+                    }).catch(function() {
+                        userFriendlyMsg = '❌ Konum izni reddedildi';
+                        if (self._isIOS) {
+                            helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver';
+                        } else {
+                            helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin';
+                        }
+                    });
+                } else {
+                    userFriendlyMsg = '❌ Konum izni reddedildi';
+                    if (this._isIOS) {
+                        helpText = '📱 iOS: Ayarlar > Safari > Konum Servisleri > Bu site > İzin ver';
+                    } else {
+                        helpText = '📱 Tarayıcı ayarlarından bu site için konum izni verin';
+                    }
+                }
+                
+                // HTTPS kontrolü
+                if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+                    helpText += '\n\n⚠️ ÖNEMLİ: iOS\'ta geolocation sadece HTTPS\'te çalışır!\n' +
+                               'Mevcut protokol: ' + location.protocol;
+                }
+            } else if (code === 2 || msg.toLowerCase().includes('unavailable') || msg.toLowerCase().includes('timeout')) {
+                userFriendlyMsg = '⚠️ Konum servisi kullanılamıyor';
+                helpText = 'GPS sinyali alınamıyor. Açık alana çıkın veya internet bağlantınızı kontrol edin.';
+            } else if (code === 3 || msg.toLowerCase().includes('timeout')) {
+                userFriendlyMsg = '⏱️ Konum alınamadı (zaman aşımı)';
+                helpText = 'GPS sinyali çok zayıf. Lütfen bekleyin veya açık alana çıkın.';
+            }
+            
+            console.error('📍 Konum hatası [code:' + code + ']:', msg);
+            if (helpText) {
+                console.error('💡 Çözüm:', helpText);
+            }
+            
+            // Kullanıcıya görsel uyarı göster (sadece ilk hatada)
+            var self = this;
+            if (!this._locationErrorShown) {
+                this._locationErrorShown = true;
+                
+                // İzin durumunu kontrol et ve popup'ı göster
+                var showPopup = function() {
+                    var center = self._map.getCenter();
+                    var popup = L.popup({
+                        maxWidth: 350,
+                        className: 'leaflet-simple-locate-error-popup'
+                    })
+                    .setLatLng(center)
+                    .setContent(
+                        '<div style="font-family:system-ui,-apple-system,sans-serif;padding:12px;">' +
+                        '<div style="font-weight:600;color:#d32f2f;margin-bottom:8px;font-size:14px;">' + userFriendlyMsg + '</div>' +
+                        (helpText ? '<div style="color:#666;font-size:12px;line-height:1.6;margin-top:6px;white-space:pre-line;">' + helpText.replace(/\n/g, '<br>') + '</div>' : '') +
+                        '<div style="margin-top:10px;font-size:11px;color:#999;">Hata kodu: ' + code + '</div>' +
+                        '</div>'
+                    )
+                    .openOn(self._map);
+                    
+                    // 15 saniye sonra otomatik kapat
+                    setTimeout(function() {
+                        if (popup && popup.isOpen()) {
+                            popup.close();
+                        }
+                    }, 15000);
+                };
+                
+                // İzin durumu kontrolü asenkron olduğu için, kontrol tamamlandıktan sonra popup göster
+                if (code === 1 && navigator.permissions && navigator.permissions.query) {
+                    navigator.permissions.query({ name: 'geolocation' }).then(function(result) {
+                        if (result.state === 'granted') {
+                            userFriendlyMsg = '⚠️ İzin Verildi Ama Hata Alınıyor';
+                            if (self._isIOS) {
+                                helpText = 'İzin verilmiş görünüyor ama tarayıcı hala eski durumu hatırlıyor.\n\n' +
+                                          'Çözüm:\n' +
+                                          '1. Safari\'yi tamamen kapatın (app switcher\'dan kaydırın)\n' +
+                                          '2. Safari\'yi tekrar açın\n' +
+                                          '3. Sayfayı yenileyin';
+                            } else {
+                                helpText = 'İzin verilmiş görünüyor ama tarayıcı cache sorunu olabilir.\n\n' +
+                                          'Çözüm: Sayfayı yenileyin (F5) veya tarayıcı cache\'ini temizleyin';
+                            }
+                        }
+                        showPopup();
+                    }).catch(function() {
+                        showPopup();
+                    });
+                } else {
+                    showPopup();
+                }
+            }
             
             // Callback'i çağır - hata bilgisi ile
             if (this.options.afterDeviceMove) {
@@ -1583,7 +1843,12 @@
                     locationStats: this._locationStats,
                     isFallback: false,
                     isIndoorMode: this.options.indoorMode,
-                    locationError: { code: code, message: msg }
+                    locationError: { 
+                        code: code, 
+                        message: msg,
+                        userFriendly: userFriendlyMsg,
+                        helpText: helpText
+                    }
                 });
             }
         },

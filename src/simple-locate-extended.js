@@ -456,9 +456,14 @@
 
                     if (st) {
                         if (stats.locationError) {
-                            st.textContent = '❌ GPS Hatası: ' + stats.locationError.message;
+                            var errorMsg = stats.locationError.userFriendly || stats.locationError.message || 'GPS Hatası';
+                            st.textContent = errorMsg;
                             st.style.color = '#d32f2f';
                             st.style.fontSize = '11px';
+                            // Help text varsa tooltip olarak ekle
+                            if (stats.locationError.helpText) {
+                                st.title = stats.locationError.helpText;
+                            }
                         } else if (stats.isPDR) {
                             st.textContent = '🦶 PDR (' + (stats.pdrStepCount || 0) + ' adım)';
                             st.style.color = '#7b1fa2';
