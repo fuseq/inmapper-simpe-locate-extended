@@ -1,5 +1,5 @@
 /**
- * LowPassFilter - Birinci dereceden düşük geçiren filtre
+
  * GPS/Geolocation verilerindeki yüksek frekanslı gürültüyü azaltır
  * 
  * @author SimpleLocate Team
@@ -111,5 +111,6 @@
 
     return LowPassFilter;
 }));
+
 
 

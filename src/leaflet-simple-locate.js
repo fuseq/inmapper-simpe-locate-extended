@@ -185,6 +185,8 @@
             ariaLabel: "",
 
             minAngleChange: 3,
+            orientationSmoothing: 5,        // Yön yumuşatma için örnek sayısı (jitter azaltma)
+            orientationTiltCompensation: true, // Tilt compensation aktif (eğik tutma düzeltmesi)
             clickTimeoutDelay: 500,
 
             setViewAfterClick: true,
@@ -341,6 +343,9 @@
             this._longitude = undefined;
             this._accuracy = undefined;
             this._angle = undefined;
+            this._orientationSamples = [];    // Yön yumuşatma için son N örnek
+            this._lastOrientationTime = 0;    // Son yön güncellemesi zamanı
+            this._orientationCalibrated = false; // Kalibrasyon durumu
 
             this._lowPassFilterLat = null;
             this._lowPassFilterLng = null;
@@ -1491,6 +1496,10 @@
             L.DomEvent.off(window, "ondeviceorientationabsolute" in window ? "deviceorientationabsolute" : "deviceorientation", this._onOrientation, this);
             document.documentElement.style.setProperty("--leaflet-simple-locate-orientation", "0deg");
             this._angle = undefined;
+            this._orientationSamples = [];
+            this._lastOrientationTime = 0;
+            this._orientationCalibrated = false;
+            this._compassUncalibratedWarned = false;
         },
 
         _onLocationFound: function (event) {
@@ -1624,20 +1633,144 @@
         },
 
         _onOrientation: function (event) {
-            // console.log("_onOrientation", new Date().toISOString(), event.absolute, event.alpha, event.beta, event.gamma);
+            // console.log("_onOrientation", new Date().toISOString(), "absolute:", event.absolute, "alpha:", event.alpha, "beta:", event.beta, "gamma:", event.gamma, "webkitAccuracy:", event.webkitCompassAccuracy);
+            
+            if (event.alpha === null || event.alpha === undefined) return;
+            
             let angle;
-            if (event.webkitCompassHeading) angle = event.webkitCompassHeading;
-            else angle = 360 - event.alpha;  // todos: test needed...
-
-            if (this._angle && Math.abs(angle - this._angle) < this.options.minAngleChange) return;
-            this._angle = angle;
-
-            if ("orientation" in screen) this._angle += screen.orientation.angle;
-            // else if (typeof window.orientation !== 'undefined') this._angle += window.orientation;  // it seems unnecessary.
-            this._angle = (this._angle + 360) % 360;
+            
+            // ===== ADIM 1: Ham açı hesaplama =====
+            if (event.webkitCompassHeading !== undefined && event.webkitCompassHeading !== null) {
+                // iOS: webkitCompassHeading direkt manyetik kuzey açısı verir
+                
+                // webkitCompassAccuracy kontrolü:
+                // -1 = pusula kalibre edilmemiş (veri güvenilmez!)
+                // 0+ = doğruluk derecesi (düşük = daha iyi)
+                if (event.webkitCompassAccuracy !== undefined && event.webkitCompassAccuracy < 0) {
+                    // Pusula kalibre edilmemiş - veriyi reddet, eski açıyı koru
+                    // Kullanıcı figure-8 yapınca accuracy pozitife döner ve veri kabul edilir
+                    if (!this._compassUncalibratedWarned) {
+                        console.warn("🧭 Pusula kalibre edilmemiş (webkitCompassAccuracy: " + event.webkitCompassAccuracy + "). Cihazı 8 çizerek kalibre edin.");
+                        this._compassUncalibratedWarned = true;
+                    }
+                    return;
+                }
+                this._compassUncalibratedWarned = false;
+                angle = event.webkitCompassHeading;
+            } else if (this.options.orientationTiltCompensation && 
+                       event.beta !== null && event.gamma !== null) {
+                // Android/Diğer: Tilt compensation ile gerçek pusula yönü hesapla
+                // Rotation matrix kullanarak cihaz eğimini telafi eder
+                angle = this._computeTiltCompensatedHeading(event.alpha, event.beta, event.gamma);
+            } else {
+                // Fallback: Basit dönüşüm (düz tutulduğunda çalışır)
+                angle = (360 - event.alpha) % 360;
+            }
+            
+            if (angle === null || isNaN(angle)) return;
+            
+            // ===== ADIM 2: Ekran yönü düzeltmesi =====
+            if ("orientation" in screen) {
+                angle = (angle + screen.orientation.angle) % 360;
+            }
+            
+            // ===== ADIM 3: Kalibrasyon değişimi tespiti =====
+            // Figure-8 sonrası büyük ani açı değişimi → hemen kabul et, smoothing sıfırla
+            if (this._angle !== undefined) {
+                let delta = Math.abs(angle - this._angle);
+                if (delta > 180) delta = 360 - delta;
+                
+                if (delta > 30) {
+                    // Büyük ani değişim = muhtemel kalibrasyon düzeltmesi
+                    // Smoothing buffer'ı sıfırla, yeni değeri hemen kabul et
+                    this._orientationSamples = [];
+                    this._orientationCalibrated = true;
+                    // console.log("🧭 Kalibrasyon algılandı! Açı farkı:", delta.toFixed(1) + "°");
+                }
+            }
+            
+            // ===== ADIM 4: Yön yumuşatma (jitter azaltma) =====
+            const smoothingSize = this.options.orientationSmoothing || 5;
+            this._orientationSamples.push(angle);
+            if (this._orientationSamples.length > smoothingSize) {
+                this._orientationSamples.shift();
+            }
+            
+            // Dairesel ortalama (0°/360° geçişini doğru hesaplar)
+            let smoothedAngle = this._circularMean(this._orientationSamples);
+            
+            // ===== ADIM 5: Minimum değişim filtresi =====
+            if (this._angle !== undefined && 
+                !this._orientationCalibrated &&
+                Math.abs(this._angleDelta(smoothedAngle, this._angle)) < this.options.minAngleChange) {
+                return;
+            }
+            this._orientationCalibrated = false;
+            
+            this._angle = (smoothedAngle + 360) % 360;
+            this._lastOrientationTime = Date.now();
 
             document.documentElement.style.setProperty("--leaflet-simple-locate-orientation", -this._angle + "deg");
             this._updateMarker();
+        },
+        
+        // Tilt-compensated pusula hesaplama (rotation matrix yaklaşımı)
+        // Cihaz eğik tutulduğunda bile doğru kuzey yönünü verir
+        _computeTiltCompensatedHeading: function (alpha, beta, gamma) {
+            var degToRad = Math.PI / 180;
+            
+            var _alpha = alpha * degToRad;
+            var _beta = beta * degToRad;
+            var _gamma = gamma * degToRad;
+            
+            // Rotation matrix bileşenleri
+            var cA = Math.cos(_alpha);
+            var sA = Math.sin(_alpha);
+            var cB = Math.cos(_beta);
+            var sB = Math.sin(_beta);
+            var cG = Math.cos(_gamma);
+            var sG = Math.sin(_gamma);
+            
+            // Pusula yönü için x ve y bileşenleri (dünya koordinat sistemine projeksiyon)
+            var rA = -cA * sG - sA * sB * cG;
+            var rB = -sA * sG + cA * sB * cG;
+            
+            // atan2 ile açı hesapla
+            var heading = Math.atan2(rA, rB);
+            
+            // Radyandan dereceye
+            if (heading < 0) heading += 2 * Math.PI;
+            heading = heading * (180 / Math.PI);
+            
+            return heading;
+        },
+        
+        // Dairesel (circular) ortalama - 0°/360° sınırında doğru çalışır
+        _circularMean: function (angles) {
+            if (!angles || angles.length === 0) return 0;
+            
+            var sinSum = 0;
+            var cosSum = 0;
+            var degToRad = Math.PI / 180;
+            
+            for (var i = 0; i < angles.length; i++) {
+                sinSum += Math.sin(angles[i] * degToRad);
+                cosSum += Math.cos(angles[i] * degToRad);
+            }
+            
+            var mean = Math.atan2(sinSum / angles.length, cosSum / angles.length);
+            mean = mean * (180 / Math.PI);
+            if (mean < 0) mean += 360;
+            
+            return mean;
+        },
+        
+        // İki açı arasındaki en kısa fark (-180 ile +180 arası)
+        _angleDelta: function (a, b) {
+            var delta = a - b;
+            while (delta > 180) delta -= 360;
+            while (delta < -180) delta += 360;
+            return delta;
         },
 
         _onZoomStart: function () {
