@@ -1,19 +1,33 @@
 <!DOCTYPE html>
 <html lang="tr">
+
 <head>
     <meta charset="utf-8">
     <title>SimpleLocate Extended - Demo</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Leaflet SimpleLocate Extended - İç mekan konum belirleme eklentisi">
-    
+
     <!-- Leaflet CSS -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
-    
+
     <style>
         /* Sayfa temel stilleri */
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        html, body { height: 100%; font-family: system-ui, -apple-system, sans-serif; }
-        #map { height: 100%; width: 100%; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            height: 100%;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        #map {
+            height: 100%;
+            width: 100%;
+        }
 
         /* Demo bilgi paneli */
         .demo-info {
@@ -24,18 +38,35 @@
             background: rgba(255, 255, 255, 0.95);
             padding: 12px 16px;
             border-radius: 8px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
             font-size: 13px;
             max-width: 300px;
         }
-        .demo-info h3 { margin-bottom: 8px; font-size: 14px; color: #333; }
-        .demo-info p { color: #666; line-height: 1.5; margin-bottom: 6px; }
-        .demo-info code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; font-size: 12px; }
+
+        .demo-info h3 {
+            margin-bottom: 8px;
+            font-size: 14px;
+            color: #333;
+        }
+
+        .demo-info p {
+            color: #666;
+            line-height: 1.5;
+            margin-bottom: 6px;
+        }
+
+        .demo-info code {
+            background: #f5f5f5;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+        }
     </style>
 </head>
+
 <body>
     <div id="map"></div>
-    
+
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -83,25 +114,25 @@
             enableDeadReckoning: true,   // PDR: iç mekan sinyali kesilince sensörlerle takip
             pdrStepLength: 0.65,         // Ortalama adım uzunluğu (metre)
             pdrMaxDuration: 60000,       // PDR maks süresi (60 saniye)
-            
+
             // Altitude & Kat Tespiti (İstanbul Havalimanı)
             enableAltitude: true,        // Altitude normalizasyonu aktif
             geoidUndulation: 39.0,       // İstanbul bölgesi geoid ondülasyonu (~39m)
             enableFloorDetection: true,  // Kat tespiti aktif
-            
+
             // Manuel kat tanımları - altitude aralıkları (MSL metre)
             // ⚠️ Bu değerler sahada kalibrasyon ile belirlenecek
             // Her katta iOS ve Android'den gelen normalize altitude loglanıp aralıklar netleştirilecek
             floors: [
-                // { floor: -2, name: "B2 - Otopark",       minAlt: 0, maxAlt: 0 },
-                // { floor: -1, name: "B1 - Metro/Otopark", minAlt: 0, maxAlt: 0 },
-                // { floor:  0, name: "Zemin - Varış",      minAlt: 0, maxAlt: 0 },
-                // { floor:  1, name: "1. Kat - Gidiş",     minAlt: 0, maxAlt: 0 },
-                // { floor:  2, name: "2. Kat - Lounge",    minAlt: 0, maxAlt: 0 },
-                // { floor:  3, name: "3. Kat - Ofisler",   minAlt: 0, maxAlt: 0 },
+                { floor: -2, name: "B2 - Otopark", minAlt: 0, maxAlt: 500 },
+                { floor: -1, name: "B1 - Metro/Otopark", minAlt: 500, maxAlt: 1000 },
+                { floor: 0, name: "Zemin - Varış", minAlt: 1000, maxAlt: 1500 },
+                { floor: 1, name: "1. Kat - Gidiş", minAlt: 1500, maxAlt: 2000 },
+                { floor: 2, name: "2. Kat - Lounge", minAlt: 2000, maxAlt: 2500 },
+                { floor: 3, name: "3. Kat - Ofisler", minAlt: 2500, maxAlt: 3000 },
             ],
 
-            afterDeviceMove: function(location) {
+            afterDeviceMove: function (location) {
                 console.log('📍 Konum:', location);
                 if (location.isPDR) {
                     console.log('🦶 PDR aktif - Adım:', location.pdrStepCount);
@@ -133,4 +164,5 @@
         console.log('💡 Geoid ayarı: locateControl.setGeoidUndulation(39.0)');
     </script>
 </body>
+
 </html>
