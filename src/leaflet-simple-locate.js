@@ -236,16 +236,6 @@
             
             // Marker görünürlük eşiği (metre)
             markerVisibilityThreshold: 30, // Accuracy bu değerin altındaysa marker gösterilir
-            
-            // ========== PEDESTRIAN DEAD RECKONING (PDR) ==========
-            enableDeadReckoning: false,     // PDR varsayılan kapalı (kullanıcı açabilir)
-            pdrStepLength: 0.65,            // Ortalama adım uzunluğu (metre)
-            pdrStepThreshold: 1.2,          // Adım tespiti için ivme eşiği (g kuvveti)
-            pdrStepCooldown: 250,           // İki adım arası minimum süre (ms) - çift sayımı engeller
-            pdrMaxDuration: 60000,          // PDR maksimum aktif süresi (ms) - 60 saniye
-            pdrMaxSteps: 100,               // PDR ile maksimum adım sayısı
-            pdrAccuracyDecay: 0.5,          // Her adımda accuracy ne kadar artar (metre)
-            pdrInitialAccuracy: 5,          // PDR başlangıç accuracy (metre)
 
             afterClick: null,
             afterMarkerAdd: null,
@@ -443,24 +433,6 @@
                 isInside: null,
                 lastCheck: null,
                 checkInterval: 1000 // 1 saniye
-            };
-            
-            // ========== PEDESTRIAN DEAD RECKONING (PDR) STATE ==========
-            this._pdr = {
-                active: false,              // PDR şu an aktif mi
-                startTime: null,            // PDR'ın başladığı zaman
-                stepCount: 0,               // Algılanan adım sayısı
-                lastStepTime: 0,            // Son adımın zamanı
-                baseLatitude: null,          // PDR başlangıç enlemi
-                baseLongitude: null,         // PDR başlangıç boylamı
-                currentLatitude: null,       // PDR ile tahmin edilen enlem
-                currentLongitude: null,      // PDR ile tahmin edilen boylam
-                currentAccuracy: null,       // PDR tahmini accuracy (giderek artar)
-                lastAccMagnitude: 0,         // Son ivme büyüklüğü
-                isStepPhase: false,          // Adım döngüsünde zirve geçildi mi
-                motionHandler: null,         // DeviceMotion event handler referansı
-                accBuffer: [],              // İvme verisi buffer'ı (smoothing için)
-                accBufferSize: 4            // Buffer boyutu
             };
         },
         
@@ -893,27 +865,9 @@
             
             if (!geofenceResult.inside) {
                 this._locationStats.geofenceRejections++;
+                console.warn(`⚠️ Geofence ihlali: ${geofenceResult.message}`);
                 
-                // ═══ PDR AKTİVASYONU ═══
-                // Dışarıdan sinyal geliyor = iç mekan sinyali kesilmiş
-                // Son iç mekan konumundan PDR ile devam et
-                if (this.options.enableDeadReckoning && !this._pdr.active) {
-                    console.log("🦶 Geofence dışı sinyal → PDR başlatılıyor");
-                    this._startDeadReckoning();
-                }
-                
-                // PDR aktifse, PDR konumunu döndür (marker PDR ile güncelleniyor)
-                if (this._pdr.active) {
-                    return {
-                        latitude: this._pdr.currentLatitude,
-                        longitude: this._pdr.currentLongitude,
-                        accuracy: this._pdr.currentAccuracy,
-                        timestamp: position.timestamp,
-                        isPDR: true
-                    };
-                }
-                
-                // PDR kapalıysa normal fallback mantığı
+                // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
                     const fallback = this._getLastGoodLocationFallback(position);
                     if (fallback) {
@@ -925,13 +879,6 @@
                 // Fallback yoksa - null döndür (marker güncellenmeyecek)
                 console.warn(`🚫 Konum reddedildi (geofence) - marker güncellenmeyecek`);
                 return null;
-            }
-            
-            // ═══ İÇ MEKAN SİNYALİ GERİ GELDİ → PDR DURDUR ═══
-            // Geofence içinden sinyal alınıyorsa PDR'a gerek yok
-            if (this._pdr.active) {
-                console.log("🦶 İç mekan sinyali geri geldi → PDR durduruluyor");
-                this._stopDeadReckoning("iç mekan sinyali geri geldi");
             }
             
             // ========== ADIM 3: HIZ KONTROLÜ ==========
@@ -1455,9 +1402,6 @@
                 lastCheck: null,
                 checkInterval: 1000
             };
-            
-            // PDR durdur ve sıfırla
-            this._stopDeadReckoning("filtreler sıfırlandı");
         },
 
         _checkClickResult: function () {
@@ -1838,215 +1782,6 @@
             return delta;
         },
 
-        // ════════════════════════════════════════════════════════
-        // PEDESTRIAN DEAD RECKONING (PDR)
-        // İç mekan sinyali kesildiğinde sensörlerle konum tahmini
-        // ════════════════════════════════════════════════════════
-        
-        // PDR'ı başlat - son bilinen iç mekan konumunu baz alarak
-        _startDeadReckoning: function () {
-            if (!this.options.enableDeadReckoning) return;
-            if (this._pdr.active) return; // Zaten aktif
-            
-            // Baz konum: son bilinen geçerli iç mekan konumu
-            var baseLat = this._latitude;
-            var baseLng = this._longitude;
-            
-            if (!baseLat || !baseLng) {
-                console.warn("🦶 PDR başlatılamadı: geçerli konum yok");
-                return;
-            }
-            
-            this._pdr.active = true;
-            this._pdr.startTime = Date.now();
-            this._pdr.stepCount = 0;
-            this._pdr.lastStepTime = 0;
-            this._pdr.baseLatitude = baseLat;
-            this._pdr.baseLongitude = baseLng;
-            this._pdr.currentLatitude = baseLat;
-            this._pdr.currentLongitude = baseLng;
-            this._pdr.currentAccuracy = this.options.pdrInitialAccuracy;
-            this._pdr.lastAccMagnitude = 0;
-            this._pdr.isStepPhase = false;
-            this._pdr.accBuffer = [];
-            
-            // DeviceMotion dinlemeye başla
-            var self = this;
-            this._pdr.motionHandler = function (e) {
-                self._onDeviceMotion(e);
-            };
-            
-            window.addEventListener("devicemotion", this._pdr.motionHandler, false);
-            
-            console.log("🦶 PDR başlatıldı - Baz konum:", baseLat.toFixed(6), baseLng.toFixed(6));
-            
-            // Callback bildir
-            if (this.options.afterDeviceMove) {
-                this.options.afterDeviceMove({
-                    lat: baseLat,
-                    lng: baseLng,
-                    accuracy: this._pdr.currentAccuracy,
-                    angle: this._angle,
-                    isPDR: true,
-                    pdrStepCount: 0,
-                    pdrActive: true
-                });
-            }
-        },
-        
-        // PDR'ı durdur
-        _stopDeadReckoning: function (reason) {
-            if (!this._pdr.active) return;
-            
-            // DeviceMotion listener'ı kaldır
-            if (this._pdr.motionHandler) {
-                window.removeEventListener("devicemotion", this._pdr.motionHandler, false);
-                this._pdr.motionHandler = null;
-            }
-            
-            console.log("🦶 PDR durduruldu (" + (reason || "bilinmeyen") + ") - " + 
-                        this._pdr.stepCount + " adım, " + 
-                        ((Date.now() - this._pdr.startTime) / 1000).toFixed(1) + "s");
-            
-            this._pdr.active = false;
-        },
-        
-        // DeviceMotion event handler - adım tespiti
-        _onDeviceMotion: function (event) {
-            if (!this._pdr.active) return;
-            
-            // Zaman/adım limiti kontrolü
-            var now = Date.now();
-            if (now - this._pdr.startTime > this.options.pdrMaxDuration) {
-                this._stopDeadReckoning("süre limiti aşıldı");
-                return;
-            }
-            if (this._pdr.stepCount >= this.options.pdrMaxSteps) {
-                this._stopDeadReckoning("adım limiti aşıldı");
-                return;
-            }
-            
-            // İvmeölçer verisini al
-            var acc = event.accelerationIncludingGravity;
-            if (!acc || acc.x === null) return;
-            
-            // İvme büyüklüğü (toplam kuvvet vektörü)
-            var magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
-            
-            // Buffer'a ekle (gürültü azaltma)
-            this._pdr.accBuffer.push(magnitude);
-            if (this._pdr.accBuffer.length > this._pdr.accBufferSize) {
-                this._pdr.accBuffer.shift();
-            }
-            
-            // Buffer ortalaması
-            var avgMag = 0;
-            for (var i = 0; i < this._pdr.accBuffer.length; i++) {
-                avgMag += this._pdr.accBuffer[i];
-            }
-            avgMag /= this._pdr.accBuffer.length;
-            
-            // Normalize: g kuvvetini çıkar (~9.81), sadece hareket ivmesine bak
-            var g = 9.81;
-            var delta = Math.abs(avgMag - g);
-            
-            // ═══ ADIM TESPİT ALGORİTMASI (zirve tespiti) ═══
-            // İnsan yürüyüşünde her adımda ivme bir zirve yapar.
-            // Eşik geçilince "zirve fazı"na gir, eşiğin altına düşünce "adım sayılır"
-            var threshold = this.options.pdrStepThreshold;
-            
-            if (!this._pdr.isStepPhase && delta > threshold) {
-                // Eşik aşıldı → zirve fazına gir
-                this._pdr.isStepPhase = true;
-            } else if (this._pdr.isStepPhase && delta < threshold * 0.6) {
-                // Eşiğin altına düştü → bir adım tamamlandı
-                this._pdr.isStepPhase = false;
-                
-                // Cooldown kontrolü (çift sayımı engelle)
-                if (now - this._pdr.lastStepTime > this.options.pdrStepCooldown) {
-                    this._pdr.lastStepTime = now;
-                    this._onStepDetected();
-                }
-            }
-            
-            this._pdr.lastAccMagnitude = delta;
-        },
-        
-        // Bir adım algılandı - konum güncelle
-        _onStepDetected: function () {
-            this._pdr.stepCount++;
-            
-            // Heading (pusula yönü) mevcut mu?
-            var heading = this._angle;
-            if (heading === undefined || heading === null) {
-                // Heading yoksa PDR çalışamaz - son konumu koru
-                console.warn("🦶 PDR: Heading verisi yok, adım sayıldı ama konum güncellenemiyor");
-                return;
-            }
-            
-            // Adım uzunluğu
-            var stepLength = this.options.pdrStepLength;
-            
-            // Heading'i radyana çevir (0° = Kuzey, saat yönünde artar)
-            var headingRad = heading * (Math.PI / 180);
-            
-            // Mevcut konumdan adım uzunluğu kadar heading yönünde ilerle
-            // Enlem: 1 derece ≈ 111,320 metre
-            // Boylam: 1 derece ≈ 111,320 × cos(enlem) metre
-            var latOffset = (stepLength * Math.cos(headingRad)) / 111320;
-            var lngOffset = (stepLength * Math.sin(headingRad)) / (111320 * Math.cos(this._pdr.currentLatitude * Math.PI / 180));
-            
-            var newLat = this._pdr.currentLatitude + latOffset;
-            var newLng = this._pdr.currentLongitude + lngOffset;
-            
-            // Geofence sınır kontrolü - PDR konumu bina dışına çıkmasın
-            var geofenceCheck = this._isInsideGeofence(newLat, newLng);
-            if (!geofenceCheck.inside) {
-                // Bina sınırına ulaşıldı - konum güncellenmez ama PDR devam eder
-                // (kullanıcı geri dönebilir)
-                console.log("🦶 PDR: Geofence sınırına ulaşıldı, konum güncellenmedi");
-                return;
-            }
-            
-            // Konumu güncelle
-            this._pdr.currentLatitude = newLat;
-            this._pdr.currentLongitude = newLng;
-            
-            // Accuracy: her adımda biraz artar (belirsizlik büyür)
-            this._pdr.currentAccuracy += this.options.pdrAccuracyDecay;
-            
-            // Ana konum değişkenlerini güncelle
-            this._latitude = newLat;
-            this._longitude = newLng;
-            this._accuracy = this._pdr.currentAccuracy;
-            
-            // Marker'ı güncelle
-            this._updateMarker();
-            
-            // console.log("🦶 PDR Adım #" + this._pdr.stepCount + 
-            //     " → [" + newLat.toFixed(6) + ", " + newLng.toFixed(6) + "]" +
-            //     " accuracy: " + this._pdr.currentAccuracy.toFixed(1) + "m");
-        },
-        
-        // PDR aktif mi? (dışarıdan sorgulanabilir)
-        isDeadReckoningActive: function () {
-            return this._pdr.active;
-        },
-        
-        // PDR durumunu al
-        getDeadReckoningState: function () {
-            return {
-                active: this._pdr.active,
-                stepCount: this._pdr.stepCount,
-                accuracy: this._pdr.currentAccuracy,
-                duration: this._pdr.active ? Date.now() - this._pdr.startTime : 0,
-                basePosition: this._pdr.baseLatitude ? {
-                    lat: this._pdr.baseLatitude,
-                    lng: this._pdr.baseLongitude
-                } : null
-            };
-        },
-
         _onZoomStart: function () {
             if (this._circle) document.documentElement.style.setProperty("--leaflet-simple-locate-circle-display", "none");
         },
@@ -2116,11 +1851,7 @@
                     locationStats: this._locationStats,
                     isFallback: this._weiYeState.lastFilteredPosition?.isFallback || false,
                     isIndoorMode: this.options.indoorMode,
-                    consecutiveBadLocations: this._consecutiveBadLocations,
-                    // ========== PDR BİLGİLERİ ==========
-                    isPDR: this._pdr.active,
-                    pdrStepCount: this._pdr.stepCount,
-                    pdrAccuracy: this._pdr.currentAccuracy
+                    consecutiveBadLocations: this._consecutiveBadLocations
                 });
             }
 

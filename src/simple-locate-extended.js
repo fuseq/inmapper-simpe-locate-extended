@@ -49,8 +49,7 @@
                 lastGoodLocation: options.lastGoodLocation !== false,
                 circleWatcher: options.circleWatcher !== false,
                 weiYePanel: !!options.weiYePanel,
-                settingsControl: !!options.settingsControl,
-                deadReckoning: !!options.enableDeadReckoning
+                settingsControl: !!options.settingsControl
             };
 
             // Ayarlar kontrolünü oluştur
@@ -147,12 +146,6 @@
                     break;
                 case 'circleWatcher':
                     this.enableCircleWatcher(enabled);
-                    break;
-                case 'deadReckoning':
-                    this.options.enableDeadReckoning = enabled;
-                    if (!enabled && this._pdr && this._pdr.active) {
-                        this._stopDeadReckoning("kullanıcı tarafından kapatıldı");
-                    }
                     break;
             }
 
@@ -443,10 +436,7 @@
                     }
 
                     if (st) {
-                        if (stats.isPDR) {
-                            st.textContent = '🦶 PDR (' + (stats.pdrStepCount || 0) + ' adım)';
-                            st.style.color = '#7b1fa2';
-                        } else if (stats.isRejected) {
+                        if (stats.isRejected) {
                             st.textContent = '🚫 Alan Dışı';
                             st.style.color = '#d32f2f';
                         } else if (stats.isFallback) {
