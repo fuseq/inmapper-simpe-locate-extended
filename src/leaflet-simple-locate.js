@@ -186,7 +186,7 @@
 
             minAngleChange: 3,
             orientationSmoothing: 5,        // Yön yumuşatma için örnek sayısı (jitter azaltma)
-            orientationTiltCompensation: true, // Tilt compensation aktif (eğik tutma düzeltmesi)
+            gimbalLockThreshold: 70,        // Beta açısı bu değeri aşınca gimbal lock koruması aktif (derece)
             clickTimeoutDelay: 500,
 
             setViewAfterClick: true,
@@ -346,6 +346,9 @@
             this._orientationSamples = [];    // Yön yumuşatma için son N örnek
             this._lastOrientationTime = 0;    // Son yön güncellemesi zamanı
             this._orientationCalibrated = false; // Kalibrasyon durumu
+            this._lastReliableHeading = undefined; // Gimbal lock öncesi son güvenilir yön
+            this._inGimbalLockZone = false;   // Gimbal lock bölgesinde mi
+            this._gimbalLockCount = 0;        // Art arda gimbal lock sayacı
 
             this._lowPassFilterLat = null;
             this._lowPassFilterLng = null;
@@ -1500,6 +1503,9 @@
             this._lastOrientationTime = 0;
             this._orientationCalibrated = false;
             this._compassUncalibratedWarned = false;
+            this._lastReliableHeading = undefined;
+            this._inGimbalLockZone = false;
+            this._gimbalLockCount = 0;
         },
 
         _onLocationFound: function (event) {
@@ -1633,7 +1639,7 @@
         },
 
         _onOrientation: function (event) {
-            // console.log("_onOrientation", new Date().toISOString(), "absolute:", event.absolute, "alpha:", event.alpha, "beta:", event.beta, "gamma:", event.gamma, "webkitAccuracy:", event.webkitCompassAccuracy);
+            // console.log("_onOrientation", "absolute:", event.absolute, "alpha:", event.alpha, "beta:", event.beta, "gamma:", event.gamma);
             
             if (event.alpha === null || event.alpha === undefined) return;
             
@@ -1641,51 +1647,66 @@
             
             // ===== ADIM 1: Ham açı hesaplama =====
             if (event.webkitCompassHeading !== undefined && event.webkitCompassHeading !== null) {
-                // iOS: webkitCompassHeading direkt manyetik kuzey açısı verir
+                // iOS: webkitCompassHeading direkt manyetik kuzey açısı verir (tilt-immune)
                 
                 // webkitCompassAccuracy kontrolü:
                 // -1 = pusula kalibre edilmemiş (veri güvenilmez!)
                 // 0+ = doğruluk derecesi (düşük = daha iyi)
                 if (event.webkitCompassAccuracy !== undefined && event.webkitCompassAccuracy < 0) {
-                    // Pusula kalibre edilmemiş - veriyi reddet, eski açıyı koru
-                    // Kullanıcı figure-8 yapınca accuracy pozitife döner ve veri kabul edilir
                     if (!this._compassUncalibratedWarned) {
-                        console.warn("🧭 Pusula kalibre edilmemiş (webkitCompassAccuracy: " + event.webkitCompassAccuracy + "). Cihazı 8 çizerek kalibre edin.");
+                        console.warn("🧭 Pusula kalibre edilmemiş. Cihazı 8 çizerek kalibre edin.");
                         this._compassUncalibratedWarned = true;
                     }
                     return;
                 }
                 this._compassUncalibratedWarned = false;
                 angle = event.webkitCompassHeading;
-            } else if (this.options.orientationTiltCompensation && 
-                       event.beta !== null && event.gamma !== null) {
-                // Android/Diğer: Tilt compensation ile gerçek pusula yönü hesapla
-                // Rotation matrix kullanarak cihaz eğimini telafi eder
-                angle = this._computeTiltCompensatedHeading(event.alpha, event.beta, event.gamma);
             } else {
-                // Fallback: Basit dönüşüm (düz tutulduğunda çalışır)
-                angle = (360 - event.alpha) % 360;
+                // Android/Diğer: Gimbal-lock korumalı heading hesaplama
+                angle = this._computeHeadingWithGimbalLockProtection(
+                    event.alpha, event.beta, event.gamma
+                );
+                
+                // null = gimbal lock bölgesi, mevcut heading'i koru
+                if (angle === null) return;
             }
             
-            if (angle === null || isNaN(angle)) return;
+            if (isNaN(angle)) return;
             
             // ===== ADIM 2: Ekran yönü düzeltmesi =====
             if ("orientation" in screen) {
                 angle = (angle + screen.orientation.angle) % 360;
             }
             
-            // ===== ADIM 3: Kalibrasyon değişimi tespiti =====
-            // Figure-8 sonrası büyük ani açı değişimi → hemen kabul et, smoothing sıfırla
+            // ===== ADIM 3: 180° sıçrama koruması =====
+            // Gimbal lock kaynaklı ani 180° flip'leri engelle
             if (this._angle !== undefined) {
-                let delta = Math.abs(angle - this._angle);
-                if (delta > 180) delta = 360 - delta;
+                let delta = this._angleDelta(angle, this._angle);
+                let absDelta = Math.abs(delta);
                 
-                if (delta > 30) {
-                    // Büyük ani değişim = muhtemel kalibrasyon düzeltmesi
-                    // Smoothing buffer'ı sıfırla, yeni değeri hemen kabul et
+                if (absDelta > 150 && absDelta < 210) {
+                    // 150-210° arası ani değişim = gimbal lock sıçraması
+                    // Bu gerçek bir dönüş olamaz (insanlar bu kadar hızlı dönmez)
+                    // Sadece kalibrasyon sonrası değilse reddet
+                    if (!this._orientationCalibrated) {
+                        this._gimbalLockCount = (this._gimbalLockCount || 0) + 1;
+                        // Eğer art arda 15+ kez aynı "yanlış" yön geliyorsa, belki gerçekten döndü
+                        if (this._gimbalLockCount < 15) {
+                            return; // Reddet
+                        }
+                        // 15+ art arda = gerçek dönüş, kabul et
+                    }
+                }
+                
+                if (absDelta > 30 && absDelta <= 150) {
+                    // 30-150° arası büyük değişim = muhtemel kalibrasyon
                     this._orientationSamples = [];
                     this._orientationCalibrated = true;
-                    // console.log("🧭 Kalibrasyon algılandı! Açı farkı:", delta.toFixed(1) + "°");
+                    this._gimbalLockCount = 0;
+                }
+                
+                if (absDelta <= 30) {
+                    this._gimbalLockCount = 0;
                 }
             }
             
@@ -1714,35 +1735,33 @@
             this._updateMarker();
         },
         
-        // Tilt-compensated pusula hesaplama (rotation matrix yaklaşımı)
-        // Cihaz eğik tutulduğunda bile doğru kuzey yönünü verir
-        _computeTiltCompensatedHeading: function (alpha, beta, gamma) {
-            var degToRad = Math.PI / 180;
+        // Gimbal lock korumalı pusula hesaplama
+        // Euler açılarının beta≈90° civarında alpha'yı 180° sıçrattığı
+        // matematiksel problemi (gimbal lock) ele alır
+        _computeHeadingWithGimbalLockProtection: function (alpha, beta, gamma) {
+            var absBeta = Math.abs(beta);
             
-            var _alpha = alpha * degToRad;
-            var _beta = beta * degToRad;
-            var _gamma = gamma * degToRad;
+            var threshold = this.options.gimbalLockThreshold || 70;
             
-            // Rotation matrix bileşenleri
-            var cA = Math.cos(_alpha);
-            var sA = Math.sin(_alpha);
-            var cB = Math.cos(_beta);
-            var sB = Math.sin(_beta);
-            var cG = Math.cos(_gamma);
-            var sG = Math.sin(_gamma);
+            // BÖLGE 1: Normal bölge (|beta| < threshold)
+            // Telefon yatay-eğik pozisyonda. +Y ekseni (telefonun üst kenarı)
+            // yatay düzleme güçlü projeksiyon yapıyor → güvenilir heading
+            if (absBeta < threshold) {
+                this._lastReliableHeading = (360 - alpha) % 360;
+                this._inGimbalLockZone = false;
+                return this._lastReliableHeading;
+            }
             
-            // Pusula yönü için x ve y bileşenleri (dünya koordinat sistemine projeksiyon)
-            var rA = -cA * sG - sA * sB * cG;
-            var rB = -sA * sG + cA * sB * cG;
+            // BÖLGE 2: Gimbal lock tehlike bölgesi (|beta| 70-90°)
+            // Telefon neredeyse dik. alpha değeri güvenilmez, 180° sıçrayabilir.
+            // Son güvenilir heading'i koru.
+            if (this._lastReliableHeading !== undefined) {
+                this._inGimbalLockZone = true;
+                return null; // null = "heading güncelleme, mevcut değeri koru"
+            }
             
-            // atan2 ile açı hesapla
-            var heading = Math.atan2(rA, rB);
-            
-            // Radyandan dereceye
-            if (heading < 0) heading += 2 * Math.PI;
-            heading = heading * (180 / Math.PI);
-            
-            return heading;
+            // Henüz güvenilir heading yok (ilk açılış), basit hesaplama yap
+            return (360 - alpha) % 360;
         },
         
         // Dairesel (circular) ortalama - 0°/360° sınırında doğru çalışır
