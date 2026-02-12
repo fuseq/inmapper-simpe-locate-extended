@@ -236,6 +236,41 @@
             
             // Marker görünürlük eşiği (metre)
             markerVisibilityThreshold: 30, // Accuracy bu değerin altındaysa marker gösterilir
+            
+            // ========== PEDESTRIAN DEAD RECKONING (PDR) ==========
+            enableDeadReckoning: false,     // PDR varsayılan kapalı (kullanıcı açabilir)
+            pdrStepLength: 0.65,            // Ortalama adım uzunluğu (metre)
+            pdrStepThreshold: 1.2,          // Adım tespiti için ivme eşiği (g kuvveti)
+            pdrStepCooldown: 250,           // İki adım arası minimum süre (ms) - çift sayımı engeller
+            pdrMaxDuration: 60000,          // PDR maksimum aktif süresi (ms) - 60 saniye
+            pdrMaxSteps: 100,               // PDR ile maksimum adım sayısı
+            pdrAccuracyDecay: 0.5,          // Her adımda accuracy ne kadar artar (metre)
+            pdrInitialAccuracy: 5,          // PDR başlangıç accuracy (metre)
+            
+            // ========== ALTITUDE NORMALİZASYON & KAT TESPİTİ ==========
+            enableAltitude: false,          // Altitude işleme aktif (varsayılan kapalı)
+            
+            // Geoid ondülasyonu: Elipsoid (WGS84) ile MSL arasındaki fark
+            // Android ham GPS altitude = elipsoid yüksekliği → MSL'e çevirmek için N çıkarılır
+            // iOS zaten MSL döndürür → düzeltme gerekmez
+            // Türkiye ortalaması ~36-40m, bölgeye göre ayarlanmalı
+            // https://geographiclib.sourceforge.io/cgi-bin/GeoidEval adresinden bulunabilir
+            geoidUndulation: 37.0,          // metre - Bina konumu için geoid ondülasyonu (N)
+            
+            // Altitude filtreleme
+            altitudeFilterEnabled: true,    // Altitude değerini filtrele (gürültü azaltma)
+            altitudeMedianWindow: 5,        // Altitude median filtre pencere boyutu
+            altitudeLowPassTau: 2.0,        // Altitude low-pass filtre tau (yavaş değişim)
+            altitudeMaxDelta: 10,           // Tek adımda max kabul edilebilir altitude değişimi (m)
+            altitudeMinAccuracy: 20,        // Bu değerin üstündeki altitudeAccuracy reddedilir (m)
+            
+            // Kat tespiti
+            enableFloorDetection: false,    // Kat tespiti aktif
+            floorHeight: 3.0,              // Kat yüksekliği (metre) - standart bina
+            groundFloorAltitude: null,      // Zemin kat rakımı (MSL metre) - KALİBRASYON GEREKLİ
+            groundFloorNumber: 0,           // Zemin kat numarası (0 veya 1)
+            floorHysteresis: 0.8,           // Kat değişimi için histerezis (metre) - titreşimi engeller
+            floors: null,                   // Manuel kat tanımları: [{floor: 0, name: "Zemin", minAlt: 1050, maxAlt: 1053}, ...]
 
             afterClick: null,
             afterMarkerAdd: null,
@@ -433,6 +468,40 @@
                 isInside: null,
                 lastCheck: null,
                 checkInterval: 1000 // 1 saniye
+            };
+            
+            // ========== ALTITUDE & KAT TESPİTİ STATE ==========
+            this._altitude = {
+                raw: null,                  // Ham altitude (platformdan gelen)
+                normalized: null,           // Normalize edilmiş altitude (MSL)
+                filtered: null,             // Filtrelenmiş altitude
+                accuracy: null,             // Altitude accuracy
+                floor: null,                // Tespit edilen kat numarası
+                floorName: null,            // Kat adı
+                medianBuffer: [],           // Median filtre buffer'ı
+                lowPassFilter: null,        // LowPass filtre instance'ı
+                lastStableFloor: null,      // Son kararlı kat (histerezis için)
+                floorChangeTime: 0,         // Son kat değişim zamanı
+                sampleCount: 0,             // Toplam altitude örneği sayısı
+                platform: null              // Tespit edilen platform ('ios' | 'android' | 'unknown')
+            };
+            
+            // ========== PEDESTRIAN DEAD RECKONING (PDR) STATE ==========
+            this._pdr = {
+                active: false,              // PDR şu an aktif mi
+                startTime: null,            // PDR'ın başladığı zaman
+                stepCount: 0,               // Algılanan adım sayısı
+                lastStepTime: 0,            // Son adımın zamanı
+                baseLatitude: null,          // PDR başlangıç enlemi
+                baseLongitude: null,         // PDR başlangıç boylamı
+                currentLatitude: null,       // PDR ile tahmin edilen enlem
+                currentLongitude: null,      // PDR ile tahmin edilen boylam
+                currentAccuracy: null,       // PDR tahmini accuracy (giderek artar)
+                lastAccMagnitude: 0,         // Son ivme büyüklüğü
+                isStepPhase: false,          // Adım döngüsünde zirve geçildi mi
+                motionHandler: null,         // DeviceMotion event handler referansı
+                accBuffer: [],              // İvme verisi buffer'ı (smoothing için)
+                accBufferSize: 4            // Buffer boyutu
             };
         },
         
@@ -844,7 +913,7 @@
                 position.accuracy > this.options.maxAcceptableAccuracy) {
                 
                 this._locationStats.accuracyRejections++;
-                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy}m (max: ${this.options.maxAcceptableAccuracy}m)`);
+                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy.toFixed(1)}m (max: ${this.options.maxAcceptableAccuracy}m) [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}]`);
                 
                 // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
@@ -855,8 +924,8 @@
                     }
                 }
                 
-                // Fallback yoksa veya katı modda - null döndür (marker güncellenmeyecek)
-                console.warn(`🚫 Konum reddedildi (accuracy) - marker güncellenmeyecek`);
+                // Fallback yoksa - null döndür (marker güncellenmeyecek)
+                // Ama ham veriyi kaydet (WeiYe panel teşhis için gösterebilsin)
                 return null;
             }
             
@@ -865,9 +934,26 @@
             
             if (!geofenceResult.inside) {
                 this._locationStats.geofenceRejections++;
-                console.warn(`⚠️ Geofence ihlali: ${geofenceResult.message}`);
+                console.warn(`🚫 Geofence dışı: [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}] acc: ${position.accuracy.toFixed(1)}m`);
                 
-                // Fallback kullan
+                // ═══ PDR AKTİVASYONU ═══
+                if (this.options.enableDeadReckoning && !this._pdr.active) {
+                    console.log("🦶 Geofence dışı sinyal → PDR başlatılıyor");
+                    this._startDeadReckoning();
+                }
+                
+                // PDR aktifse, PDR konumunu döndür
+                if (this._pdr.active) {
+                    return {
+                        latitude: this._pdr.currentLatitude,
+                        longitude: this._pdr.currentLongitude,
+                        accuracy: this._pdr.currentAccuracy,
+                        timestamp: position.timestamp,
+                        isPDR: true
+                    };
+                }
+                
+                // PDR kapalıysa normal fallback mantığı
                 if (this.options.enableLastGoodLocation) {
                     const fallback = this._getLastGoodLocationFallback(position);
                     if (fallback) {
@@ -876,9 +962,14 @@
                     }
                 }
                 
-                // Fallback yoksa - null döndür (marker güncellenmeyecek)
-                console.warn(`🚫 Konum reddedildi (geofence) - marker güncellenmeyecek`);
+                // Fallback yoksa - null döndür
                 return null;
+            }
+            
+            // ═══ İÇ MEKAN SİNYALİ GERİ GELDİ → PDR DURDUR ═══
+            if (this._pdr.active) {
+                console.log("🦶 İç mekan sinyali geri geldi → PDR durduruluyor");
+                this._stopDeadReckoning("iç mekan sinyali geri geldi");
             }
             
             // ========== ADIM 3: HIZ KONTROLÜ ==========
@@ -1314,17 +1405,17 @@
                         this._watchGeolocation();
                         this._checkClickResult();
                     }).catch((error) => {
+                        console.error('❌ Geolocation hatası:', error && error.message ? error.message : error);
                         this._geolocation = false;
                         this._checkClickResult();
                     });
 
                     this._checkOrientation().then(() => {
-                        // console.log("_checkOrientation", new Date().toISOString(), "success!");
                         this._orientation = true;
                         this._watchOrientation();
                         this._checkClickResult();
-                    }).catch(() => {
-                        // console.log("_checkOrientation", new Date().toISOString(), "failed!");
+                    }).catch((error) => {
+                        console.warn('🧭 Orientation izni reddedildi veya desteklenmiyor:', error || '');
                         this._orientation = false;
                         this._checkClickResult();
                     });
@@ -1402,6 +1493,12 @@
                 lastCheck: null,
                 checkInterval: 1000
             };
+            
+            // Altitude sıfırla
+            this._resetAltitude();
+            
+            // PDR durdur ve sıfırla
+            this._stopDeadReckoning("filtreler sıfırlandı");
         },
 
         _checkClickResult: function () {
@@ -1454,6 +1551,11 @@
         },
 
         _watchGeolocation: function () {
+            console.log('📍 Geolocation izleme başlatılıyor...');
+            console.log('📍 Platform:', this._isIOS ? 'iOS' : 'Android/Diğer');
+            console.log('📍 Geofence:', this.options.geofence ? 'aktif' : 'yok');
+            console.log('📍 maxAcceptableAccuracy:', this.options.maxAcceptableAccuracy, 'm');
+            
             this._map.locate({ watch: true, enableHighAccuracy: true });
             this._map.on("locationfound", this._onLocationFound, this);
             this._map.on("locationerror", this._onLocationError, this);
@@ -1462,7 +1564,28 @@
         },
         
         _onLocationError: function (error) {
-            // Hata sessizce işlenir
+            var msg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
+            var code = error && error.code ? error.code : 0;
+            console.warn('📍 Konum hatası [code:' + code + ']:', msg);
+            
+            // Callback'i çağır - hata bilgisi ile
+            if (this.options.afterDeviceMove) {
+                this.options.afterDeviceMove({
+                    lat: this._latitude,
+                    lng: this._longitude,
+                    accuracy: this._accuracy,
+                    angle: this._angle,
+                    isFiltered: false,
+                    isRejected: true,
+                    isJump: false,
+                    filterStats: this._weiYeState ? this._weiYeState.filteringStats : {},
+                    confidence: 0,
+                    locationStats: this._locationStats,
+                    isFallback: false,
+                    isIndoorMode: this.options.indoorMode,
+                    locationError: { code: code, message: msg }
+                });
+            }
         },
 
         _unwatchGeolocation: function () {
@@ -1507,6 +1630,14 @@
         },
 
         _onLocationFound: function (event) {
+            // Ham GPS verisini logla (teşhis için)
+            console.log('📡 Ham GPS:', 
+                event.latitude ? event.latitude.toFixed(6) : '?', 
+                event.longitude ? event.longitude.toFixed(6) : '?',
+                'acc:', event.accuracy ? event.accuracy.toFixed(1) + 'm' : '?',
+                'alt:', event.altitude !== undefined && event.altitude !== null ? event.altitude.toFixed(1) + 'm' : 'yok'
+            );
+            
             // Wei Ye algoritması ile konumu filtrele
             const filteredPosition = this._applyWeiYeFilter(event);
             
@@ -1527,12 +1658,12 @@
                     this._circle = undefined;
                 }
 
-                // Callback'i çağır (istatistikler için) - ham konum yerine son geçerli/filtrelenmiş bilgileri ver
+                // Callback'i çağır - ham GPS verisini de ekle (WeiYe panel teşhis bilgisi gösterebilsin)
                 if (this.options.afterDeviceMove) {
                     this.options.afterDeviceMove({
-                        lat: this._latitude,
-                        lng: this._longitude,
-                        accuracy: this._accuracy,
+                        lat: this._latitude || event.latitude,
+                        lng: this._longitude || event.longitude,
+                        accuracy: this._accuracy || event.accuracy,
                         angle: this._angle,
                         isFiltered: true,
                         isRejected: true,
@@ -1542,7 +1673,15 @@
                         locationStats: this._locationStats,
                         isFallback: false,
                         isIndoorMode: this.options.indoorMode,
-                        consecutiveBadLocations: this._consecutiveBadLocations
+                        consecutiveBadLocations: this._consecutiveBadLocations,
+                        // Ham GPS verisi (teşhis için)
+                        rawGPS: {
+                            lat: event.latitude,
+                            lng: event.longitude,
+                            accuracy: event.accuracy,
+                            altitude: event.altitude,
+                            altitudeAccuracy: event.altitudeAccuracy
+                        }
                     });
                 }
                 return;
@@ -1631,6 +1770,16 @@
             this._latitude = filteredPosition.latitude;
             this._longitude = filteredPosition.longitude;
             this._accuracy = filteredPosition.accuracy;
+            
+            // ========== ALTITUDE İŞLEME ==========
+            // Leaflet locationfound event'inde altitude bilgisi varsa işle
+            if (this.options.enableAltitude && event.altitude !== undefined) {
+                try {
+                    this._processAltitude(event);
+                } catch (e) {
+                    console.warn('⛰️ Altitude işleme hatası:', e.message);
+                }
+            }
 
             // Marker'ı güncelle
             this._updateMarker();
@@ -1782,6 +1931,440 @@
             return delta;
         },
 
+        // ════════════════════════════════════════════════════════
+        // ALTITUDE NORMALİZASYON & KAT TESPİTİ
+        // iOS ve Android arasındaki altitude farkını normalize eder
+        // ve iç mekanda kat tespiti yapar
+        // ════════════════════════════════════════════════════════
+        
+        // Altitude verisini işle (her locationfound'da çağrılır)
+        _processAltitude: function (position) {
+            if (!this.options.enableAltitude) return;
+            
+            // Leaflet locationfound event'inde altitude bilgisi
+            var rawAltitude = position.altitude;
+            var altitudeAccuracy = position.altitudeAccuracy;
+            
+            // Altitude yoksa çık
+            if (rawAltitude === null || rawAltitude === undefined) return;
+            
+            this._altitude.raw = rawAltitude;
+            this._altitude.accuracy = altitudeAccuracy;
+            this._altitude.sampleCount++;
+            
+            // Platform tespiti (ilk seferde)
+            if (!this._altitude.platform) {
+                this._altitude.platform = this._isIOS ? 'ios' : 'android';
+            }
+            
+            // ═══ ADIM 1: ACCURACY KONTROLÜ ═══
+            if (altitudeAccuracy !== null && altitudeAccuracy !== undefined &&
+                altitudeAccuracy > this.options.altitudeMinAccuracy) {
+                // Accuracy çok kötü, bu değeri kullanma
+                return;
+            }
+            
+            // ═══ ADIM 2: PLATFORM NORMALİZASYONU (MSL'e çevir) ═══
+            var mslAltitude = this._normalizeAltitudeToMSL(rawAltitude);
+            this._altitude.normalized = mslAltitude;
+            
+            // ═══ ADIM 3: ANİ SIÇRAMA KONTROLÜ ═══
+            if (this._altitude.filtered !== null) {
+                var altDelta = Math.abs(mslAltitude - this._altitude.filtered);
+                if (altDelta > this.options.altitudeMaxDelta) {
+                    // Ani sıçrama - muhtemelen GPS hatası, yoksay
+                    console.warn('⛰️ Altitude sıçraması tespit edildi: ' + altDelta.toFixed(1) + 'm → yoksayıldı');
+                    return;
+                }
+            }
+            
+            // ═══ ADIM 4: FİLTRELEME ═══
+            var filteredAltitude;
+            if (this.options.altitudeFilterEnabled) {
+                filteredAltitude = this._filterAltitude(mslAltitude);
+            } else {
+                filteredAltitude = mslAltitude;
+            }
+            
+            this._altitude.filtered = filteredAltitude;
+            
+            // ═══ ADIM 5: KAT TESPİTİ ═══
+            if (this.options.enableFloorDetection) {
+                this._detectFloor(filteredAltitude);
+            }
+        },
+        
+        // Android altitude'unu MSL'e normalize et
+        // iOS zaten MSL döndürür, Android WGS84 elipsoid döndürür
+        _normalizeAltitudeToMSL: function (rawAltitude) {
+            if (this._altitude.platform === 'ios') {
+                // iOS: Core Location zaten MSL (Mean Sea Level) döndürür
+                return rawAltitude;
+            }
+            
+            // Android: Elipsoid yüksekliği → MSL'e çevir
+            // MSL = Elipsoid Yüksekliği - Geoid Ondülasyonu (N)
+            var N = this.options.geoidUndulation;
+            return rawAltitude - N;
+        },
+        
+        // Altitude filtreleme (Median + LowPass)
+        _filterAltitude: function (altitude) {
+            // ─── Median Filtre ───
+            var buffer = this._altitude.medianBuffer;
+            var windowSize = this.options.altitudeMedianWindow;
+            
+            buffer.push(altitude);
+            if (buffer.length > windowSize) {
+                buffer.shift();
+            }
+            
+            // Median hesapla
+            var sorted = buffer.slice().sort(function (a, b) { return a - b; });
+            var medianAltitude;
+            var mid = Math.floor(sorted.length / 2);
+            if (sorted.length % 2 === 0) {
+                medianAltitude = (sorted[mid - 1] + sorted[mid]) / 2;
+            } else {
+                medianAltitude = sorted[mid];
+            }
+            
+            // ─── Low Pass Filtre ───
+            if (!this._altitude.lowPassFilter && typeof LowPassFilter !== 'undefined') {
+                this._altitude.lowPassFilter = new LowPassFilter(1.0, this.options.altitudeLowPassTau);
+            }
+            
+            if (this._altitude.lowPassFilter) {
+                this._altitude.lowPassFilter.addSample(medianAltitude);
+                return this._altitude.lowPassFilter.lastOutput();
+            }
+            
+            return medianAltitude;
+        },
+        
+        // Kat tespiti
+        _detectFloor: function (altitude) {
+            var floor = null;
+            var floorName = null;
+            
+            // ─── Yöntem 1: Manuel kat tanımları (öncelikli) ───
+            if (this.options.floors && this.options.floors.length > 0) {
+                for (var i = 0; i < this.options.floors.length; i++) {
+                    var f = this.options.floors[i];
+                    if (altitude >= f.minAlt && altitude < f.maxAlt) {
+                        floor = f.floor;
+                        floorName = f.name || ('Kat ' + f.floor);
+                        break;
+                    }
+                }
+            }
+            // ─── Yöntem 2: Otomatik hesaplama (groundFloorAltitude + floorHeight) ───
+            else if (this.options.groundFloorAltitude !== null) {
+                var relativeHeight = altitude - this.options.groundFloorAltitude;
+                var rawFloor = relativeHeight / this.options.floorHeight;
+                floor = Math.round(rawFloor) + this.options.groundFloorNumber;
+                floorName = 'Kat ' + floor;
+            }
+            
+            if (floor === null) return;
+            
+            // ─── Histerezis: Küçük dalgalanmalarda kat değişimini engelle ───
+            if (this._altitude.lastStableFloor !== null && floor !== this._altitude.lastStableFloor) {
+                // Yeni katla eski kat arasındaki altitude farkı yeterli mi?
+                var expectedAltForNewFloor;
+                if (this.options.groundFloorAltitude !== null) {
+                    expectedAltForNewFloor = this.options.groundFloorAltitude + 
+                        (floor - this.options.groundFloorNumber) * this.options.floorHeight;
+                    var distFromBoundary = Math.abs(altitude - expectedAltForNewFloor);
+                    
+                    // Kat sınırına yeterince yaklaşmadıysa kat değiştirme
+                    if (distFromBoundary > (this.options.floorHeight / 2 - this.options.floorHysteresis)) {
+                        // Histerezis eşiğini aştı → kat değiştir
+                    } else {
+                        // Sınırda salınım - önceki katı koru
+                        floor = this._altitude.lastStableFloor;
+                        floorName = 'Kat ' + floor;
+                    }
+                }
+                
+                // Minimum süre kontrolü (çok hızlı kat değişimini engelle)
+                var now = Date.now();
+                if (now - this._altitude.floorChangeTime < 3000) {
+                    // Son 3 saniyede zaten kat değişimi oldu, bekle
+                    floor = this._altitude.lastStableFloor;
+                    floorName = 'Kat ' + floor;
+                }
+            }
+            
+            // Kat değiştiyse bildir
+            if (this._altitude.floor !== floor) {
+                var prevFloor = this._altitude.floor;
+                this._altitude.floor = floor;
+                this._altitude.floorName = floorName;
+                this._altitude.lastStableFloor = floor;
+                this._altitude.floorChangeTime = Date.now();
+                
+                console.log('🏢 Kat değişimi: ' + (prevFloor !== null ? prevFloor : '?') + 
+                           ' → ' + floor + ' (altitude: ' + altitude.toFixed(1) + 'm MSL)');
+            }
+        },
+        
+        // Altitude verilerini sıfırla
+        _resetAltitude: function () {
+            this._altitude.raw = null;
+            this._altitude.normalized = null;
+            this._altitude.filtered = null;
+            this._altitude.accuracy = null;
+            this._altitude.floor = null;
+            this._altitude.floorName = null;
+            this._altitude.medianBuffer = [];
+            this._altitude.lastStableFloor = null;
+            this._altitude.sampleCount = 0;
+            if (this._altitude.lowPassFilter && this._altitude.lowPassFilter.reset) {
+                this._altitude.lowPassFilter.reset();
+            }
+        },
+        
+        // Dışarıdan altitude verilerini sorgula
+        getAltitude: function () {
+            return {
+                raw: this._altitude.raw,
+                normalized: this._altitude.normalized,
+                filtered: this._altitude.filtered,
+                accuracy: this._altitude.accuracy,
+                floor: this._altitude.floor,
+                floorName: this._altitude.floorName,
+                platform: this._altitude.platform,
+                sampleCount: this._altitude.sampleCount
+            };
+        },
+        
+        // Zemin kat kalibrasyonu (cihaz zemin kattayken çağrılır)
+        calibrateGroundFloor: function () {
+            if (this._altitude.filtered === null) {
+                console.warn('⛰️ Kalibrasyon yapılamadı: Henüz altitude verisi yok');
+                return null;
+            }
+            
+            var groundAlt = this._altitude.filtered;
+            this.options.groundFloorAltitude = groundAlt;
+            this._altitude.floor = this.options.groundFloorNumber;
+            this._altitude.floorName = 'Kat ' + this.options.groundFloorNumber;
+            this._altitude.lastStableFloor = this.options.groundFloorNumber;
+            
+            console.log('⛰️ Zemin kat kalibre edildi: ' + groundAlt.toFixed(2) + 'm MSL');
+            return groundAlt;
+        },
+
+        // ════════════════════════════════════════════════════════
+        // PEDESTRIAN DEAD RECKONING (PDR)
+        // İç mekan sinyali kesildiğinde sensörlerle konum tahmini
+        // ════════════════════════════════════════════════════════
+        
+        // PDR'ı başlat - son bilinen iç mekan konumunu baz alarak
+        _startDeadReckoning: function () {
+            if (!this.options.enableDeadReckoning) return;
+            if (this._pdr.active) return; // Zaten aktif
+            
+            // Baz konum: son bilinen geçerli iç mekan konumu
+            var baseLat = this._latitude;
+            var baseLng = this._longitude;
+            
+            if (!baseLat || !baseLng) {
+                console.warn("🦶 PDR başlatılamadı: geçerli konum yok");
+                return;
+            }
+            
+            this._pdr.active = true;
+            this._pdr.startTime = Date.now();
+            this._pdr.stepCount = 0;
+            this._pdr.lastStepTime = 0;
+            this._pdr.baseLatitude = baseLat;
+            this._pdr.baseLongitude = baseLng;
+            this._pdr.currentLatitude = baseLat;
+            this._pdr.currentLongitude = baseLng;
+            this._pdr.currentAccuracy = this.options.pdrInitialAccuracy;
+            this._pdr.lastAccMagnitude = 0;
+            this._pdr.isStepPhase = false;
+            this._pdr.accBuffer = [];
+            
+            // DeviceMotion dinlemeye başla
+            var self = this;
+            this._pdr.motionHandler = function (e) {
+                self._onDeviceMotion(e);
+            };
+            
+            window.addEventListener("devicemotion", this._pdr.motionHandler, false);
+            
+            console.log("🦶 PDR başlatıldı - Baz konum:", baseLat.toFixed(6), baseLng.toFixed(6));
+            
+            // Callback bildir
+            if (this.options.afterDeviceMove) {
+                this.options.afterDeviceMove({
+                    lat: baseLat,
+                    lng: baseLng,
+                    accuracy: this._pdr.currentAccuracy,
+                    angle: this._angle,
+                    isPDR: true,
+                    pdrStepCount: 0,
+                    pdrActive: true
+                });
+            }
+        },
+        
+        // PDR'ı durdur
+        _stopDeadReckoning: function (reason) {
+            if (!this._pdr.active) return;
+            
+            // DeviceMotion listener'ı kaldır
+            if (this._pdr.motionHandler) {
+                window.removeEventListener("devicemotion", this._pdr.motionHandler, false);
+                this._pdr.motionHandler = null;
+            }
+            
+            console.log("🦶 PDR durduruldu (" + (reason || "bilinmeyen") + ") - " + 
+                        this._pdr.stepCount + " adım, " + 
+                        ((Date.now() - this._pdr.startTime) / 1000).toFixed(1) + "s");
+            
+            this._pdr.active = false;
+        },
+        
+        // DeviceMotion event handler - adım tespiti
+        _onDeviceMotion: function (event) {
+            if (!this._pdr.active) return;
+            
+            // Zaman/adım limiti kontrolü
+            var now = Date.now();
+            if (now - this._pdr.startTime > this.options.pdrMaxDuration) {
+                this._stopDeadReckoning("süre limiti aşıldı");
+                return;
+            }
+            if (this._pdr.stepCount >= this.options.pdrMaxSteps) {
+                this._stopDeadReckoning("adım limiti aşıldı");
+                return;
+            }
+            
+            // İvmeölçer verisini al
+            var acc = event.accelerationIncludingGravity;
+            if (!acc || acc.x === null) return;
+            
+            // İvme büyüklüğü (toplam kuvvet vektörü)
+            var magnitude = Math.sqrt(acc.x * acc.x + acc.y * acc.y + acc.z * acc.z);
+            
+            // Buffer'a ekle (gürültü azaltma)
+            this._pdr.accBuffer.push(magnitude);
+            if (this._pdr.accBuffer.length > this._pdr.accBufferSize) {
+                this._pdr.accBuffer.shift();
+            }
+            
+            // Buffer ortalaması
+            var avgMag = 0;
+            for (var i = 0; i < this._pdr.accBuffer.length; i++) {
+                avgMag += this._pdr.accBuffer[i];
+            }
+            avgMag /= this._pdr.accBuffer.length;
+            
+            // Normalize: g kuvvetini çıkar (~9.81), sadece hareket ivmesine bak
+            var g = 9.81;
+            var delta = Math.abs(avgMag - g);
+            
+            // ═══ ADIM TESPİT ALGORİTMASI (zirve tespiti) ═══
+            // İnsan yürüyüşünde her adımda ivme bir zirve yapar.
+            // Eşik geçilince "zirve fazı"na gir, eşiğin altına düşünce "adım sayılır"
+            var threshold = this.options.pdrStepThreshold;
+            
+            if (!this._pdr.isStepPhase && delta > threshold) {
+                // Eşik aşıldı → zirve fazına gir
+                this._pdr.isStepPhase = true;
+            } else if (this._pdr.isStepPhase && delta < threshold * 0.6) {
+                // Eşiğin altına düştü → bir adım tamamlandı
+                this._pdr.isStepPhase = false;
+                
+                // Cooldown kontrolü (çift sayımı engelle)
+                if (now - this._pdr.lastStepTime > this.options.pdrStepCooldown) {
+                    this._pdr.lastStepTime = now;
+                    this._onStepDetected();
+                }
+            }
+            
+            this._pdr.lastAccMagnitude = delta;
+        },
+        
+        // Bir adım algılandı - konum güncelle
+        _onStepDetected: function () {
+            this._pdr.stepCount++;
+            
+            // Heading (pusula yönü) mevcut mu?
+            var heading = this._angle;
+            if (heading === undefined || heading === null) {
+                // Heading yoksa PDR çalışamaz - son konumu koru
+                console.warn("🦶 PDR: Heading verisi yok, adım sayıldı ama konum güncellenemiyor");
+                return;
+            }
+            
+            // Adım uzunluğu
+            var stepLength = this.options.pdrStepLength;
+            
+            // Heading'i radyana çevir (0° = Kuzey, saat yönünde artar)
+            var headingRad = heading * (Math.PI / 180);
+            
+            // Mevcut konumdan adım uzunluğu kadar heading yönünde ilerle
+            // Enlem: 1 derece ≈ 111,320 metre
+            // Boylam: 1 derece ≈ 111,320 × cos(enlem) metre
+            var latOffset = (stepLength * Math.cos(headingRad)) / 111320;
+            var lngOffset = (stepLength * Math.sin(headingRad)) / (111320 * Math.cos(this._pdr.currentLatitude * Math.PI / 180));
+            
+            var newLat = this._pdr.currentLatitude + latOffset;
+            var newLng = this._pdr.currentLongitude + lngOffset;
+            
+            // Geofence sınır kontrolü - PDR konumu bina dışına çıkmasın
+            var geofenceCheck = this._isInsideGeofence(newLat, newLng);
+            if (!geofenceCheck.inside) {
+                // Bina sınırına ulaşıldı - konum güncellenmez ama PDR devam eder
+                // (kullanıcı geri dönebilir)
+                console.log("🦶 PDR: Geofence sınırına ulaşıldı, konum güncellenmedi");
+                return;
+            }
+            
+            // Konumu güncelle
+            this._pdr.currentLatitude = newLat;
+            this._pdr.currentLongitude = newLng;
+            
+            // Accuracy: her adımda biraz artar (belirsizlik büyür)
+            this._pdr.currentAccuracy += this.options.pdrAccuracyDecay;
+            
+            // Ana konum değişkenlerini güncelle
+            this._latitude = newLat;
+            this._longitude = newLng;
+            this._accuracy = this._pdr.currentAccuracy;
+            
+            // Marker'ı güncelle
+            this._updateMarker();
+            
+            // console.log("🦶 PDR Adım #" + this._pdr.stepCount + 
+            //     " → [" + newLat.toFixed(6) + ", " + newLng.toFixed(6) + "]" +
+            //     " accuracy: " + this._pdr.currentAccuracy.toFixed(1) + "m");
+        },
+        
+        // PDR aktif mi? (dışarıdan sorgulanabilir)
+        isDeadReckoningActive: function () {
+            return this._pdr.active;
+        },
+        
+        // PDR durumunu al
+        getDeadReckoningState: function () {
+            return {
+                active: this._pdr.active,
+                stepCount: this._pdr.stepCount,
+                accuracy: this._pdr.currentAccuracy,
+                duration: this._pdr.active ? Date.now() - this._pdr.startTime : 0,
+                basePosition: this._pdr.baseLatitude ? {
+                    lat: this._pdr.baseLatitude,
+                    lng: this._pdr.baseLongitude
+                } : null
+            };
+        },
+
         _onZoomStart: function () {
             if (this._circle) document.documentElement.style.setProperty("--leaflet-simple-locate-circle-display", "none");
         },
@@ -1851,7 +2434,18 @@
                     locationStats: this._locationStats,
                     isFallback: this._weiYeState.lastFilteredPosition?.isFallback || false,
                     isIndoorMode: this.options.indoorMode,
-                    consecutiveBadLocations: this._consecutiveBadLocations
+                    consecutiveBadLocations: this._consecutiveBadLocations,
+                    // ========== PDR BİLGİLERİ ==========
+                    isPDR: this._pdr.active,
+                    pdrStepCount: this._pdr.stepCount,
+                    pdrAccuracy: this._pdr.currentAccuracy,
+                    // ========== ALTITUDE & KAT BİLGİLERİ ==========
+                    altitude: this._altitude.filtered,
+                    altitudeRaw: this._altitude.raw,
+                    altitudeAccuracy: this._altitude.accuracy,
+                    altitudePlatform: this._altitude.platform,
+                    floor: this._altitude.floor,
+                    floorName: this._altitude.floorName
                 });
             }
 
