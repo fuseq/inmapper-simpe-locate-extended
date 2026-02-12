@@ -913,7 +913,7 @@
                 position.accuracy > this.options.maxAcceptableAccuracy) {
                 
                 this._locationStats.accuracyRejections++;
-                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy}m (max: ${this.options.maxAcceptableAccuracy}m)`);
+                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy.toFixed(1)}m (max: ${this.options.maxAcceptableAccuracy}m) [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}]`);
                 
                 // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
@@ -924,8 +924,8 @@
                     }
                 }
                 
-                // Fallback yoksa veya katı modda - null döndür (marker güncellenmeyecek)
-                console.warn(`🚫 Konum reddedildi (accuracy) - marker güncellenmeyecek`);
+                // Fallback yoksa - null döndür (marker güncellenmeyecek)
+                // Ama ham veriyi kaydet (WeiYe panel teşhis için gösterebilsin)
                 return null;
             }
             
@@ -934,16 +934,15 @@
             
             if (!geofenceResult.inside) {
                 this._locationStats.geofenceRejections++;
+                console.warn(`🚫 Geofence dışı: [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}] acc: ${position.accuracy.toFixed(1)}m`);
                 
                 // ═══ PDR AKTİVASYONU ═══
-                // Dışarıdan sinyal geliyor = iç mekan sinyali kesilmiş
-                // Son iç mekan konumundan PDR ile devam et
                 if (this.options.enableDeadReckoning && !this._pdr.active) {
                     console.log("🦶 Geofence dışı sinyal → PDR başlatılıyor");
                     this._startDeadReckoning();
                 }
                 
-                // PDR aktifse, PDR konumunu döndür (marker PDR ile güncelleniyor)
+                // PDR aktifse, PDR konumunu döndür
                 if (this._pdr.active) {
                     return {
                         latitude: this._pdr.currentLatitude,
@@ -963,13 +962,11 @@
                     }
                 }
                 
-                // Fallback yoksa - null döndür (marker güncellenmeyecek)
-                console.warn(`🚫 Konum reddedildi (geofence) - marker güncellenmeyecek`);
+                // Fallback yoksa - null döndür
                 return null;
             }
             
             // ═══ İÇ MEKAN SİNYALİ GERİ GELDİ → PDR DURDUR ═══
-            // Geofence içinden sinyal alınıyorsa PDR'a gerek yok
             if (this._pdr.active) {
                 console.log("🦶 İç mekan sinyali geri geldi → PDR durduruluyor");
                 this._stopDeadReckoning("iç mekan sinyali geri geldi");
@@ -1408,17 +1405,17 @@
                         this._watchGeolocation();
                         this._checkClickResult();
                     }).catch((error) => {
+                        console.error('❌ Geolocation hatası:', error && error.message ? error.message : error);
                         this._geolocation = false;
                         this._checkClickResult();
                     });
 
                     this._checkOrientation().then(() => {
-                        // console.log("_checkOrientation", new Date().toISOString(), "success!");
                         this._orientation = true;
                         this._watchOrientation();
                         this._checkClickResult();
-                    }).catch(() => {
-                        // console.log("_checkOrientation", new Date().toISOString(), "failed!");
+                    }).catch((error) => {
+                        console.warn('🧭 Orientation izni reddedildi veya desteklenmiyor:', error || '');
                         this._orientation = false;
                         this._checkClickResult();
                     });
@@ -1554,6 +1551,11 @@
         },
 
         _watchGeolocation: function () {
+            console.log('📍 Geolocation izleme başlatılıyor...');
+            console.log('📍 Platform:', this._isIOS ? 'iOS' : 'Android/Diğer');
+            console.log('📍 Geofence:', this.options.geofence ? 'aktif' : 'yok');
+            console.log('📍 maxAcceptableAccuracy:', this.options.maxAcceptableAccuracy, 'm');
+            
             this._map.locate({ watch: true, enableHighAccuracy: true });
             this._map.on("locationfound", this._onLocationFound, this);
             this._map.on("locationerror", this._onLocationError, this);
@@ -1562,7 +1564,28 @@
         },
         
         _onLocationError: function (error) {
-            // Hata sessizce işlenir
+            var msg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
+            var code = error && error.code ? error.code : 0;
+            console.warn('📍 Konum hatası [code:' + code + ']:', msg);
+            
+            // Callback'i çağır - hata bilgisi ile
+            if (this.options.afterDeviceMove) {
+                this.options.afterDeviceMove({
+                    lat: this._latitude,
+                    lng: this._longitude,
+                    accuracy: this._accuracy,
+                    angle: this._angle,
+                    isFiltered: false,
+                    isRejected: true,
+                    isJump: false,
+                    filterStats: this._weiYeState ? this._weiYeState.filteringStats : {},
+                    confidence: 0,
+                    locationStats: this._locationStats,
+                    isFallback: false,
+                    isIndoorMode: this.options.indoorMode,
+                    locationError: { code: code, message: msg }
+                });
+            }
         },
 
         _unwatchGeolocation: function () {
@@ -1607,6 +1630,14 @@
         },
 
         _onLocationFound: function (event) {
+            // Ham GPS verisini logla (teşhis için)
+            console.log('📡 Ham GPS:', 
+                event.latitude ? event.latitude.toFixed(6) : '?', 
+                event.longitude ? event.longitude.toFixed(6) : '?',
+                'acc:', event.accuracy ? event.accuracy.toFixed(1) + 'm' : '?',
+                'alt:', event.altitude !== undefined && event.altitude !== null ? event.altitude.toFixed(1) + 'm' : 'yok'
+            );
+            
             // Wei Ye algoritması ile konumu filtrele
             const filteredPosition = this._applyWeiYeFilter(event);
             
@@ -1627,12 +1658,12 @@
                     this._circle = undefined;
                 }
 
-                // Callback'i çağır (istatistikler için) - ham konum yerine son geçerli/filtrelenmiş bilgileri ver
+                // Callback'i çağır - ham GPS verisini de ekle (WeiYe panel teşhis bilgisi gösterebilsin)
                 if (this.options.afterDeviceMove) {
                     this.options.afterDeviceMove({
-                        lat: this._latitude,
-                        lng: this._longitude,
-                        accuracy: this._accuracy,
+                        lat: this._latitude || event.latitude,
+                        lng: this._longitude || event.longitude,
+                        accuracy: this._accuracy || event.accuracy,
                         angle: this._angle,
                         isFiltered: true,
                         isRejected: true,
@@ -1642,7 +1673,15 @@
                         locationStats: this._locationStats,
                         isFallback: false,
                         isIndoorMode: this.options.indoorMode,
-                        consecutiveBadLocations: this._consecutiveBadLocations
+                        consecutiveBadLocations: this._consecutiveBadLocations,
+                        // Ham GPS verisi (teşhis için)
+                        rawGPS: {
+                            lat: event.latitude,
+                            lng: event.longitude,
+                            accuracy: event.accuracy,
+                            altitude: event.altitude,
+                            altitudeAccuracy: event.altitudeAccuracy
+                        }
                     });
                 }
                 return;
