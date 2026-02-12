@@ -246,6 +246,31 @@
             pdrMaxSteps: 100,               // PDR ile maksimum adım sayısı
             pdrAccuracyDecay: 0.5,          // Her adımda accuracy ne kadar artar (metre)
             pdrInitialAccuracy: 5,          // PDR başlangıç accuracy (metre)
+            
+            // ========== ALTITUDE NORMALİZASYON & KAT TESPİTİ ==========
+            enableAltitude: false,          // Altitude işleme aktif (varsayılan kapalı)
+            
+            // Geoid ondülasyonu: Elipsoid (WGS84) ile MSL arasındaki fark
+            // Android ham GPS altitude = elipsoid yüksekliği → MSL'e çevirmek için N çıkarılır
+            // iOS zaten MSL döndürür → düzeltme gerekmez
+            // Türkiye ortalaması ~36-40m, bölgeye göre ayarlanmalı
+            // https://geographiclib.sourceforge.io/cgi-bin/GeoidEval adresinden bulunabilir
+            geoidUndulation: 37.0,          // metre - Bina konumu için geoid ondülasyonu (N)
+            
+            // Altitude filtreleme
+            altitudeFilterEnabled: true,    // Altitude değerini filtrele (gürültü azaltma)
+            altitudeMedianWindow: 5,        // Altitude median filtre pencere boyutu
+            altitudeLowPassTau: 2.0,        // Altitude low-pass filtre tau (yavaş değişim)
+            altitudeMaxDelta: 10,           // Tek adımda max kabul edilebilir altitude değişimi (m)
+            altitudeMinAccuracy: 20,        // Bu değerin üstündeki altitudeAccuracy reddedilir (m)
+            
+            // Kat tespiti
+            enableFloorDetection: false,    // Kat tespiti aktif
+            floorHeight: 3.0,              // Kat yüksekliği (metre) - standart bina
+            groundFloorAltitude: null,      // Zemin kat rakımı (MSL metre) - KALİBRASYON GEREKLİ
+            groundFloorNumber: 0,           // Zemin kat numarası (0 veya 1)
+            floorHysteresis: 0.8,           // Kat değişimi için histerezis (metre) - titreşimi engeller
+            floors: null,                   // Manuel kat tanımları: [{floor: 0, name: "Zemin", minAlt: 1050, maxAlt: 1053}, ...]
 
             afterClick: null,
             afterMarkerAdd: null,
@@ -443,6 +468,22 @@
                 isInside: null,
                 lastCheck: null,
                 checkInterval: 1000 // 1 saniye
+            };
+            
+            // ========== ALTITUDE & KAT TESPİTİ STATE ==========
+            this._altitude = {
+                raw: null,                  // Ham altitude (platformdan gelen)
+                normalized: null,           // Normalize edilmiş altitude (MSL)
+                filtered: null,             // Filtrelenmiş altitude
+                accuracy: null,             // Altitude accuracy
+                floor: null,                // Tespit edilen kat numarası
+                floorName: null,            // Kat adı
+                medianBuffer: [],           // Median filtre buffer'ı
+                lowPassFilter: null,        // LowPass filtre instance'ı
+                lastStableFloor: null,      // Son kararlı kat (histerezis için)
+                floorChangeTime: 0,         // Son kat değişim zamanı
+                sampleCount: 0,             // Toplam altitude örneği sayısı
+                platform: null              // Tespit edilen platform ('ios' | 'android' | 'unknown')
             };
             
             // ========== PEDESTRIAN DEAD RECKONING (PDR) STATE ==========
@@ -1456,6 +1497,9 @@
                 checkInterval: 1000
             };
             
+            // Altitude sıfırla
+            this._resetAltitude();
+            
             // PDR durdur ve sıfırla
             this._stopDeadReckoning("filtreler sıfırlandı");
         },
@@ -1687,6 +1731,12 @@
             this._latitude = filteredPosition.latitude;
             this._longitude = filteredPosition.longitude;
             this._accuracy = filteredPosition.accuracy;
+            
+            // ========== ALTITUDE İŞLEME ==========
+            // Leaflet locationfound event'inde altitude bilgisi varsa işle
+            if (this.options.enableAltitude && event.altitude !== undefined) {
+                this._processAltitude(event);
+            }
 
             // Marker'ı güncelle
             this._updateMarker();
@@ -1836,6 +1886,230 @@
             while (delta > 180) delta -= 360;
             while (delta < -180) delta += 360;
             return delta;
+        },
+
+        // ════════════════════════════════════════════════════════
+        // ALTITUDE NORMALİZASYON & KAT TESPİTİ
+        // iOS ve Android arasındaki altitude farkını normalize eder
+        // ve iç mekanda kat tespiti yapar
+        // ════════════════════════════════════════════════════════
+        
+        // Altitude verisini işle (her locationfound'da çağrılır)
+        _processAltitude: function (position) {
+            if (!this.options.enableAltitude) return;
+            
+            // Leaflet locationfound event'inde altitude bilgisi
+            var rawAltitude = position.altitude;
+            var altitudeAccuracy = position.altitudeAccuracy;
+            
+            // Altitude yoksa çık
+            if (rawAltitude === null || rawAltitude === undefined) return;
+            
+            this._altitude.raw = rawAltitude;
+            this._altitude.accuracy = altitudeAccuracy;
+            this._altitude.sampleCount++;
+            
+            // Platform tespiti (ilk seferde)
+            if (!this._altitude.platform) {
+                this._altitude.platform = this._isIOS ? 'ios' : 'android';
+            }
+            
+            // ═══ ADIM 1: ACCURACY KONTROLÜ ═══
+            if (altitudeAccuracy !== null && altitudeAccuracy !== undefined &&
+                altitudeAccuracy > this.options.altitudeMinAccuracy) {
+                // Accuracy çok kötü, bu değeri kullanma
+                return;
+            }
+            
+            // ═══ ADIM 2: PLATFORM NORMALİZASYONU (MSL'e çevir) ═══
+            var mslAltitude = this._normalizeAltitudeToMSL(rawAltitude);
+            this._altitude.normalized = mslAltitude;
+            
+            // ═══ ADIM 3: ANİ SIÇRAMA KONTROLÜ ═══
+            if (this._altitude.filtered !== null) {
+                var altDelta = Math.abs(mslAltitude - this._altitude.filtered);
+                if (altDelta > this.options.altitudeMaxDelta) {
+                    // Ani sıçrama - muhtemelen GPS hatası, yoksay
+                    console.warn('⛰️ Altitude sıçraması tespit edildi: ' + altDelta.toFixed(1) + 'm → yoksayıldı');
+                    return;
+                }
+            }
+            
+            // ═══ ADIM 4: FİLTRELEME ═══
+            var filteredAltitude;
+            if (this.options.altitudeFilterEnabled) {
+                filteredAltitude = this._filterAltitude(mslAltitude);
+            } else {
+                filteredAltitude = mslAltitude;
+            }
+            
+            this._altitude.filtered = filteredAltitude;
+            
+            // ═══ ADIM 5: KAT TESPİTİ ═══
+            if (this.options.enableFloorDetection) {
+                this._detectFloor(filteredAltitude);
+            }
+        },
+        
+        // Android altitude'unu MSL'e normalize et
+        // iOS zaten MSL döndürür, Android WGS84 elipsoid döndürür
+        _normalizeAltitudeToMSL: function (rawAltitude) {
+            if (this._altitude.platform === 'ios') {
+                // iOS: Core Location zaten MSL (Mean Sea Level) döndürür
+                return rawAltitude;
+            }
+            
+            // Android: Elipsoid yüksekliği → MSL'e çevir
+            // MSL = Elipsoid Yüksekliği - Geoid Ondülasyonu (N)
+            var N = this.options.geoidUndulation;
+            return rawAltitude - N;
+        },
+        
+        // Altitude filtreleme (Median + LowPass)
+        _filterAltitude: function (altitude) {
+            // ─── Median Filtre ───
+            var buffer = this._altitude.medianBuffer;
+            var windowSize = this.options.altitudeMedianWindow;
+            
+            buffer.push(altitude);
+            if (buffer.length > windowSize) {
+                buffer.shift();
+            }
+            
+            // Median hesapla
+            var sorted = buffer.slice().sort(function (a, b) { return a - b; });
+            var medianAltitude;
+            var mid = Math.floor(sorted.length / 2);
+            if (sorted.length % 2 === 0) {
+                medianAltitude = (sorted[mid - 1] + sorted[mid]) / 2;
+            } else {
+                medianAltitude = sorted[mid];
+            }
+            
+            // ─── Low Pass Filtre ───
+            if (!this._altitude.lowPassFilter && typeof LowPassFilter !== 'undefined') {
+                this._altitude.lowPassFilter = new LowPassFilter(this.options.altitudeLowPassTau);
+            }
+            
+            if (this._altitude.lowPassFilter) {
+                return this._altitude.lowPassFilter.apply(medianAltitude, Date.now() / 1000);
+            }
+            
+            return medianAltitude;
+        },
+        
+        // Kat tespiti
+        _detectFloor: function (altitude) {
+            var floor = null;
+            var floorName = null;
+            
+            // ─── Yöntem 1: Manuel kat tanımları (öncelikli) ───
+            if (this.options.floors && this.options.floors.length > 0) {
+                for (var i = 0; i < this.options.floors.length; i++) {
+                    var f = this.options.floors[i];
+                    if (altitude >= f.minAlt && altitude < f.maxAlt) {
+                        floor = f.floor;
+                        floorName = f.name || ('Kat ' + f.floor);
+                        break;
+                    }
+                }
+            }
+            // ─── Yöntem 2: Otomatik hesaplama (groundFloorAltitude + floorHeight) ───
+            else if (this.options.groundFloorAltitude !== null) {
+                var relativeHeight = altitude - this.options.groundFloorAltitude;
+                var rawFloor = relativeHeight / this.options.floorHeight;
+                floor = Math.round(rawFloor) + this.options.groundFloorNumber;
+                floorName = 'Kat ' + floor;
+            }
+            
+            if (floor === null) return;
+            
+            // ─── Histerezis: Küçük dalgalanmalarda kat değişimini engelle ───
+            if (this._altitude.lastStableFloor !== null && floor !== this._altitude.lastStableFloor) {
+                // Yeni katla eski kat arasındaki altitude farkı yeterli mi?
+                var expectedAltForNewFloor;
+                if (this.options.groundFloorAltitude !== null) {
+                    expectedAltForNewFloor = this.options.groundFloorAltitude + 
+                        (floor - this.options.groundFloorNumber) * this.options.floorHeight;
+                    var distFromBoundary = Math.abs(altitude - expectedAltForNewFloor);
+                    
+                    // Kat sınırına yeterince yaklaşmadıysa kat değiştirme
+                    if (distFromBoundary > (this.options.floorHeight / 2 - this.options.floorHysteresis)) {
+                        // Histerezis eşiğini aştı → kat değiştir
+                    } else {
+                        // Sınırda salınım - önceki katı koru
+                        floor = this._altitude.lastStableFloor;
+                        floorName = 'Kat ' + floor;
+                    }
+                }
+                
+                // Minimum süre kontrolü (çok hızlı kat değişimini engelle)
+                var now = Date.now();
+                if (now - this._altitude.floorChangeTime < 3000) {
+                    // Son 3 saniyede zaten kat değişimi oldu, bekle
+                    floor = this._altitude.lastStableFloor;
+                    floorName = 'Kat ' + floor;
+                }
+            }
+            
+            // Kat değiştiyse bildir
+            if (this._altitude.floor !== floor) {
+                var prevFloor = this._altitude.floor;
+                this._altitude.floor = floor;
+                this._altitude.floorName = floorName;
+                this._altitude.lastStableFloor = floor;
+                this._altitude.floorChangeTime = Date.now();
+                
+                console.log('🏢 Kat değişimi: ' + (prevFloor !== null ? prevFloor : '?') + 
+                           ' → ' + floor + ' (altitude: ' + altitude.toFixed(1) + 'm MSL)');
+            }
+        },
+        
+        // Altitude verilerini sıfırla
+        _resetAltitude: function () {
+            this._altitude.raw = null;
+            this._altitude.normalized = null;
+            this._altitude.filtered = null;
+            this._altitude.accuracy = null;
+            this._altitude.floor = null;
+            this._altitude.floorName = null;
+            this._altitude.medianBuffer = [];
+            this._altitude.lastStableFloor = null;
+            this._altitude.sampleCount = 0;
+            if (this._altitude.lowPassFilter && this._altitude.lowPassFilter.reset) {
+                this._altitude.lowPassFilter.reset();
+            }
+        },
+        
+        // Dışarıdan altitude verilerini sorgula
+        getAltitude: function () {
+            return {
+                raw: this._altitude.raw,
+                normalized: this._altitude.normalized,
+                filtered: this._altitude.filtered,
+                accuracy: this._altitude.accuracy,
+                floor: this._altitude.floor,
+                floorName: this._altitude.floorName,
+                platform: this._altitude.platform,
+                sampleCount: this._altitude.sampleCount
+            };
+        },
+        
+        // Zemin kat kalibrasyonu (cihaz zemin kattayken çağrılır)
+        calibrateGroundFloor: function () {
+            if (this._altitude.filtered === null) {
+                console.warn('⛰️ Kalibrasyon yapılamadı: Henüz altitude verisi yok');
+                return null;
+            }
+            
+            var groundAlt = this._altitude.filtered;
+            this.options.groundFloorAltitude = groundAlt;
+            this._altitude.floor = this.options.groundFloorNumber;
+            this._altitude.floorName = 'Kat ' + this.options.groundFloorNumber;
+            this._altitude.lastStableFloor = this.options.groundFloorNumber;
+            
+            console.log('⛰️ Zemin kat kalibre edildi: ' + groundAlt.toFixed(2) + 'm MSL');
+            return groundAlt;
         },
 
         // ════════════════════════════════════════════════════════
@@ -2120,7 +2394,14 @@
                     // ========== PDR BİLGİLERİ ==========
                     isPDR: this._pdr.active,
                     pdrStepCount: this._pdr.stepCount,
-                    pdrAccuracy: this._pdr.currentAccuracy
+                    pdrAccuracy: this._pdr.currentAccuracy,
+                    // ========== ALTITUDE & KAT BİLGİLERİ ==========
+                    altitude: this._altitude.filtered,
+                    altitudeRaw: this._altitude.raw,
+                    altitudeAccuracy: this._altitude.accuracy,
+                    altitudePlatform: this._altitude.platform,
+                    floor: this._altitude.floor,
+                    floorName: this._altitude.floorName
                 });
             }
 

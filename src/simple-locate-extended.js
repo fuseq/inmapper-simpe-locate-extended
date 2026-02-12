@@ -418,6 +418,12 @@
                         '<div style="margin:4px 0;">Doğruluk: <span class="accuracy-value" style="font-weight:500;color:#1976d2;">--</span> m</div>' +
                         '<div style="margin:4px 0;">Güvenilirlik: <span class="confidence-value" style="font-weight:500;color:#388e3c;">--</span>%</div>' +
                         '<div style="margin:4px 0;">Durum: <span class="status-value" style="font-weight:500;">--</span></div>' +
+                        '<div class="altitude-section" style="display:none;margin-top:8px;padding-top:6px;border-top:1px solid #eee;">' +
+                            '<div style="font-weight:600;margin-bottom:4px;color:#5d4037;font-size:12px;">⛰️ Altitude</div>' +
+                            '<div style="margin:3px 0;">Rakım: <span class="altitude-value" style="font-weight:600;color:#5d4037;">--</span> m <span class="altitude-platform" style="font-size:10px;color:#999;"></span></div>' +
+                            '<div style="margin:3px 0;font-size:11px;color:#888;">Ham: <span class="altitude-raw-value">--</span> m</div>' +
+                            '<div class="floor-row" style="margin:3px 0;display:none;">Kat: <span class="floor-value" style="font-weight:700;color:#7b1fa2;font-size:14px;">--</span></div>' +
+                        '</div>' +
                         '<div style="margin:4px 0;font-size:11px;color:#666;">Güncellemeler: <span class="updates-value">0</span></div>';
 
                     L.DomEvent.disableClickPropagation(this._container);
@@ -461,11 +467,68 @@
                     if (upd && stats.filterStats) {
                         upd.textContent = stats.filterStats.totalUpdates || 0;
                     }
+
+                    // Altitude section gösterimi
+                    var altSection = this._container.querySelector('.altitude-section');
+                    var altVal = this._container.querySelector('.altitude-value');
+                    var altRaw = this._container.querySelector('.altitude-raw-value');
+                    var altPlatform = this._container.querySelector('.altitude-platform');
+                    
+                    if (altSection && stats.altitude !== undefined && stats.altitude !== null) {
+                        altSection.style.display = '';
+                        
+                        if (altVal) {
+                            altVal.textContent = stats.altitude.toFixed(1);
+                        }
+                        if (altRaw && stats.altitudeRaw !== undefined && stats.altitudeRaw !== null) {
+                            altRaw.textContent = stats.altitudeRaw.toFixed(1);
+                        }
+                        if (altPlatform && stats.altitudePlatform) {
+                            altPlatform.textContent = '(' + stats.altitudePlatform + ')';
+                        }
+                    }
+
+                    // Kat gösterimi
+                    var floorRow = this._container.querySelector('.floor-row');
+                    var floorVal = this._container.querySelector('.floor-value');
+                    if (floorRow && floorVal && stats.floor !== undefined && stats.floor !== null) {
+                        floorRow.style.display = '';
+                        floorVal.textContent = stats.floorName || ('Kat ' + stats.floor);
+                    }
                 }
             });
 
             this._weiYeInfoControl = new WeiYeInfoControl().addTo(map);
             return this._weiYeInfoControl;
+        },
+
+        /**
+         * Zemin kat kalibrasyonu yap (cihaz zemin kattayken çağrılmalı)
+         * @returns {number|null} Kalibre edilen zemin kat rakımı (MSL)
+         */
+        calibrateGroundFloor: function () {
+            if (typeof this._altitude === 'undefined') return null;
+            return L.Control.SimpleLocate.prototype.calibrateGroundFloor.call(this);
+        },
+        
+        /**
+         * Kat tanımlarını ayarla
+         * @param {Array} floors - [{floor: 0, name: "Zemin", minAlt: 1050, maxAlt: 1053}, ...]
+         */
+        setFloors: function (floors) {
+            this.options.floors = floors;
+            this.options.enableFloorDetection = true;
+            this.options.enableAltitude = true;
+            return this;
+        },
+        
+        /**
+         * Geoid ondülasyonunu ayarla (bölgeye göre)
+         * @param {number} N - Geoid ondülasyonu (metre)
+         */
+        setGeoidUndulation: function (N) {
+            this.options.geoidUndulation = N;
+            return this;
         },
 
         /**

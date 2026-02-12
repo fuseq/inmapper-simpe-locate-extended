@@ -83,10 +83,36 @@
             enableDeadReckoning: true,   // PDR: iç mekan sinyali kesilince sensörlerle takip
             pdrStepLength: 0.65,         // Ortalama adım uzunluğu (metre)
             pdrMaxDuration: 60000,       // PDR maks süresi (60 saniye)
+            
+            // Altitude & Kat Tespiti (İstanbul Havalimanı)
+            enableAltitude: true,        // Altitude normalizasyonu aktif
+            geoidUndulation: 39.0,       // İstanbul bölgesi geoid ondülasyonu (~39m)
+            enableFloorDetection: true,  // Kat tespiti aktif
+            
+            // Manuel kat tanımları - altitude aralıkları (MSL metre)
+            // ⚠️ Bu değerler sahada kalibrasyon ile belirlenecek
+            // Her katta iOS ve Android'den gelen normalize altitude loglanıp aralıklar netleştirilecek
+            floors: [
+                // { floor: -2, name: "B2 - Otopark",       minAlt: 0, maxAlt: 0 },
+                // { floor: -1, name: "B1 - Metro/Otopark", minAlt: 0, maxAlt: 0 },
+                // { floor:  0, name: "Zemin - Varış",      minAlt: 0, maxAlt: 0 },
+                // { floor:  1, name: "1. Kat - Gidiş",     minAlt: 0, maxAlt: 0 },
+                // { floor:  2, name: "2. Kat - Lounge",    minAlt: 0, maxAlt: 0 },
+                // { floor:  3, name: "3. Kat - Ofisler",   minAlt: 0, maxAlt: 0 },
+            ],
+
             afterDeviceMove: function(location) {
                 console.log('📍 Konum:', location);
                 if (location.isPDR) {
                     console.log('🦶 PDR aktif - Adım:', location.pdrStepCount);
+                }
+                if (location.altitude !== null && location.altitude !== undefined) {
+                    console.log(
+                        '⛰️ Rakım:', location.altitude.toFixed(2) + 'm MSL',
+                        '| Ham:', (location.altitudeRaw !== null ? location.altitudeRaw.toFixed(2) : '--') + 'm',
+                        '| Platform:', location.altitudePlatform || '--',
+                        location.floor !== null ? '| Kat: ' + location.floorName : '| Kat: kalibrasyon gerekli'
+                    );
                 }
             }
         }).addTo(map);
@@ -95,6 +121,16 @@
         map.fitBounds(L.polygon(geofencePolygon.map(p => [p.lat, p.lng])).getBounds().pad(0.2));
 
         console.log('✅ SimpleLocate Extended hazır!');
+        console.log('');
+        console.log('📋 KAT KALİBRASYON REHBERİ:');
+        console.log('1. Her katta birkaç dakika bekleyip console loglarından MSL altitude değerini not edin');
+        console.log('2. iOS ve Android\'de ayrı ayrı test edin - normalize edilmiş değerler aynı olmalı');
+        console.log('3. floors dizisindeki minAlt/maxAlt değerlerini doldurun');
+        console.log('4. locateControl.getAltitude() ile anlık veri alabilirsiniz');
+        console.log('');
+        console.log('💡 Runtime\'da kat tanımı:');
+        console.log('   locateControl.setFloors([{floor: 0, name: "Zemin", minAlt: 70, maxAlt: 74}, ...])');
+        console.log('💡 Geoid ayarı: locateControl.setGeoidUndulation(39.0)');
     </script>
 </body>
 </html>
