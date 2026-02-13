@@ -62,150 +62,11 @@
             font-size: 12px;
         }
 
-        /* Console Debug Panel */
-        #console-panel {
-            position: fixed;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: #1e1e1e;
-            color: #d4d4d4;
-            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
-            font-size: 12px;
-            z-index: 10000;
-            display: none;
-            flex-direction: column;
-            max-height: 40vh;
-            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
-        }
-
-        #console-panel.visible {
-            display: flex;
-        }
-
-        #console-header {
-            background: #2d2d2d;
-            padding: 8px 12px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            border-bottom: 1px solid #3e3e3e;
-        }
-
-        #console-header h3 {
-            margin: 0;
-            font-size: 13px;
-            font-weight: 600;
-            color: #fff;
-        }
-
-        #console-buttons {
-            display: flex;
-            gap: 8px;
-        }
-
-        .console-btn {
-            background: #3e3e3e;
-            border: none;
-            color: #d4d4d4;
-            padding: 4px 12px;
-            border-radius: 4px;
-            font-size: 11px;
-            cursor: pointer;
-            font-family: inherit;
-        }
-
-        .console-btn:hover {
-            background: #4e4e4e;
-        }
-
-        .console-btn.clear {
-            background: #d32f2f;
-            color: #fff;
-        }
-
-        .console-btn.clear:hover {
-            background: #f44336;
-        }
-
-        #console-content {
-            flex: 1;
-            overflow-y: auto;
-            padding: 8px 12px;
-            line-height: 1.6;
-        }
-
-        .console-log {
-            margin: 2px 0;
-            padding: 2px 0;
-            word-wrap: break-word;
-            white-space: pre-wrap;
-        }
-
-        .console-log.info {
-            color: #d4d4d4;
-        }
-
-        .console-log.warn {
-            color: #ffa726;
-        }
-
-        .console-log.error {
-            color: #f44336;
-            font-weight: 600;
-        }
-
-        .console-log-time {
-            color: #858585;
-            font-size: 10px;
-            margin-right: 8px;
-        }
-
-        #console-toggle {
-            position: fixed;
-            bottom: 10px;
-            right: 10px;
-            z-index: 10001;
-            background: #1976d2;
-            color: white;
-            border: none;
-            border-radius: 50%;
-            width: 50px;
-            height: 50px;
-            font-size: 20px;
-            cursor: pointer;
-            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-
-        #console-toggle:hover {
-            background: #1565c0;
-        }
-
-        #console-toggle.active {
-            background: #d32f2f;
-        }
     </style>
 </head>
 
 <body>
     <div id="map"></div>
-
-    <!-- Console Debug Panel -->
-    <button id="console-toggle" title="Console Logları">📋</button>
-    <div id="console-panel">
-        <div id="console-header">
-            <h3>📋 Console Logları</h3>
-            <div id="console-buttons">
-                <button class="console-btn clear" onclick="clearConsole()">Temizle</button>
-                <button class="console-btn" onclick="toggleConsole()">Kapat</button>
-            </div>
-        </div>
-        <div id="console-content"></div>
-    </div>
-
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
@@ -216,127 +77,6 @@
     <script src="src/simple-locate-extended.js"></script>
 
     <script>
-        // ========== CONSOLE DEBUG PANEL ==========
-        (function() {
-            const panel = document.getElementById('console-panel');
-            const content = document.getElementById('console-content');
-            const toggle = document.getElementById('console-toggle');
-            let isVisible = false;
-            let maxLogs = 500; // Maksimum log sayısı
-
-            // Console'u intercept et
-            const originalLog = console.log;
-            const originalWarn = console.warn;
-            const originalError = console.error;
-
-            function addLog(message, type = 'info') {
-                const logDiv = document.createElement('div');
-                logDiv.className = 'console-log ' + type;
-                
-                const time = new Date().toLocaleTimeString('tr-TR');
-                const timeSpan = document.createElement('span');
-                timeSpan.className = 'console-log-time';
-                timeSpan.textContent = time;
-                
-                const textSpan = document.createElement('span');
-                // Eğer message bir obje ise JSON.stringify yap
-                if (typeof message === 'object') {
-                    try {
-                        textSpan.textContent = JSON.stringify(message, null, 2);
-                    } catch (e) {
-                        textSpan.textContent = String(message);
-                    }
-                } else {
-                    textSpan.textContent = String(message);
-                }
-                
-                logDiv.appendChild(timeSpan);
-                logDiv.appendChild(textSpan);
-                content.appendChild(logDiv);
-
-                // Maksimum log sayısını kontrol et
-                while (content.children.length > maxLogs) {
-                    content.removeChild(content.firstChild);
-                }
-
-                // Otomatik scroll (en alta)
-                content.scrollTop = content.scrollHeight;
-            }
-
-            // Console metodlarını override et
-            console.log = function(...args) {
-                originalLog.apply(console, args);
-                const message = args.map(arg => {
-                    if (typeof arg === 'object') {
-                        try {
-                            return JSON.stringify(arg, null, 2);
-                        } catch (e) {
-                            return String(arg);
-                        }
-                    }
-                    return String(arg);
-                }).join(' ');
-                addLog(message, 'info');
-            };
-
-            console.warn = function(...args) {
-                originalWarn.apply(console, args);
-                const message = args.map(arg => {
-                    if (typeof arg === 'object') {
-                        try {
-                            return JSON.stringify(arg, null, 2);
-                        } catch (e) {
-                            return String(arg);
-                        }
-                    }
-                    return String(arg);
-                }).join(' ');
-                addLog(message, 'warn');
-            };
-
-            console.error = function(...args) {
-                originalError.apply(console, args);
-                const message = args.map(arg => {
-                    if (typeof arg === 'object') {
-                        try {
-                            return JSON.stringify(arg, null, 2);
-                        } catch (e) {
-                            return String(arg);
-                        }
-                    }
-                    return String(arg);
-                }).join(' ');
-                addLog(message, 'error');
-            };
-
-            // Toggle fonksiyonu
-            window.toggleConsole = function() {
-                isVisible = !isVisible;
-                if (isVisible) {
-                    panel.classList.add('visible');
-                    toggle.classList.add('active');
-                    toggle.textContent = '✕';
-                } else {
-                    panel.classList.remove('visible');
-                    toggle.classList.remove('active');
-                    toggle.textContent = '📋';
-                }
-            };
-
-            // Temizle fonksiyonu
-            window.clearConsole = function() {
-                content.innerHTML = '';
-                addLog('Console temizlendi', 'info');
-            };
-
-            // Toggle butonuna tıklama
-            toggle.addEventListener('click', toggleConsole);
-
-            // İlk mesaj
-            addLog('✅ Console debug paneli hazır!', 'info');
-        })();
-
-        // ========== HARİTA VE PLUGIN ==========
         // Haritayı oluştur
         const map = L.map('map').setView([37.4257, 31.8525], 17);
 
@@ -378,11 +118,8 @@
             // Altitude & Kat Tespiti (İstanbul Havalimanı)
             enableAltitude: true,        // Altitude normalizasyonu aktif
             geoidUndulation: 39.0,       // İstanbul bölgesi geoid ondülasyonu (~39m)
-            enableFloorDetection: true,  // Kat tespiti aktif
+            enableFloorDetection: true,  
 
-            // Manuel kat tanımları - altitude aralıkları (MSL metre)
-            // ⚠️ Bu değerler sahada kalibrasyon ile belirlenecek
-            // Her katta iOS ve Android'den gelen normalize altitude loglanıp aralıklar netleştirilecek
             floors: [
                 { floor: -2, name: "B2 - Otopark", minAlt: 0, maxAlt: 500 },
                 { floor: -1, name: "B1 - Metro/Otopark", minAlt: 500, maxAlt: 1000 },
@@ -393,35 +130,13 @@
             ],
 
             afterDeviceMove: function (location) {
-                console.log('📍 Konum:', location);
-                if (location.isPDR) {
-                    console.log('🦶 PDR aktif - Adım:', location.pdrStepCount);
-                }
-                if (location.altitude !== null && location.altitude !== undefined) {
-                    console.log(
-                        '⛰️ Rakım:', location.altitude.toFixed(2) + 'm MSL',
-                        '| Ham:', (location.altitudeRaw !== null ? location.altitudeRaw.toFixed(2) : '--') + 'm',
-                        '| Platform:', location.altitudePlatform || '--',
-                        location.floor !== null ? '| Kat: ' + location.floorName : '| Kat: kalibrasyon gerekli'
-                    );
-                }
+                // Konum güncellemelerini burada işleyebilirsiniz
             }
         }).addTo(map);
 
         // Haritayı geofence'e fit et
         map.fitBounds(L.polygon(geofencePolygon.map(p => [p.lat, p.lng])).getBounds().pad(0.2));
 
-        console.log('✅ SimpleLocate Extended hazır!');
-        console.log('');
-        console.log('📋 KAT KALİBRASYON REHBERİ:');
-        console.log('1. Her katta birkaç dakika bekleyip console loglarından MSL altitude değerini not edin');
-        console.log('2. iOS ve Android\'de ayrı ayrı test edin - normalize edilmiş değerler aynı olmalı');
-        console.log('3. floors dizisindeki minAlt/maxAlt değerlerini doldurun');
-        console.log('4. locateControl.getAltitude() ile anlık veri alabilirsiniz');
-        console.log('');
-        console.log('💡 Runtime\'da kat tanımı:');
-        console.log('   locateControl.setFloors([{floor: 0, name: "Zemin", minAlt: 70, maxAlt: 74}, ...])');
-        console.log('💡 Geoid ayarı: locateControl.setGeoidUndulation(39.0)');
     </script>
 </body>
 

@@ -418,12 +418,6 @@
                         '<div style="margin:4px 0;">Doğruluk: <span class="accuracy-value" style="font-weight:500;color:#1976d2;">--</span> m</div>' +
                         '<div style="margin:4px 0;">Güvenilirlik: <span class="confidence-value" style="font-weight:500;color:#388e3c;">--</span>%</div>' +
                         '<div style="margin:4px 0;">Durum: <span class="status-value" style="font-weight:500;">--</span></div>' +
-                        '<div class="raw-gps-section" style="display:none;margin-top:8px;padding-top:6px;border-top:1px solid #eee;">' +
-                            '<div style="font-weight:600;margin-bottom:4px;color:#d32f2f;font-size:12px;">📡 Ham GPS (Teşhis)</div>' +
-                            '<div style="margin:2px 0;font-size:11px;">Konum: <span class="raw-gps-latlng" style="color:#555;">--</span></div>' +
-                            '<div style="margin:2px 0;font-size:11px;">Accuracy: <span class="raw-gps-accuracy" style="font-weight:600;color:#d32f2f;">--</span> m</div>' +
-                            '<div style="margin:2px 0;font-size:11px;">Red: <span class="rejection-stats" style="color:#f57c00;">--</span></div>' +
-                        '</div>' +
                         '<div class="altitude-section" style="display:none;margin-top:8px;padding-top:6px;border-top:1px solid #eee;">' +
                             '<div style="font-weight:600;margin-bottom:4px;color:#5d4037;font-size:12px;">⛰️ Altitude</div>' +
                             '<div style="margin:3px 0;">Rakım: <span class="altitude-value" style="font-weight:600;color:#5d4037;">--</span> m <span class="altitude-platform" style="font-size:10px;color:#999;"></span></div>' +
@@ -455,11 +449,7 @@
                     }
 
                     if (st) {
-                        if (stats.locationError) {
-                            st.textContent = '❌ GPS Hatası: ' + stats.locationError.message;
-                            st.style.color = '#d32f2f';
-                            st.style.fontSize = '11px';
-                        } else if (stats.isPDR) {
+                        if (stats.isPDR) {
                             st.textContent = '🦶 PDR (' + (stats.pdrStepCount || 0) + ' adım)';
                             st.style.color = '#7b1fa2';
                             st.style.fontSize = '';
@@ -495,41 +485,6 @@
                         upd.textContent = total;
                     } else if (upd && stats.filterStats) {
                         upd.textContent = stats.filterStats.totalUpdates || 0;
-                    }
-
-                    // Ham GPS teşhis bilgisi (reddedilen konumlarda)
-                    var rawSection = this._container.querySelector('.raw-gps-section');
-                    if (rawSection) {
-                        var rawLatlng = this._container.querySelector('.raw-gps-latlng');
-                        var rawAcc = this._container.querySelector('.raw-gps-accuracy');
-                        var rejStats = this._container.querySelector('.rejection-stats');
-                        
-                        if (stats.rawGPS) {
-                            // Ham GPS verisi var - göster
-                            rawSection.style.display = '';
-                            if (rawLatlng) rawLatlng.textContent = stats.rawGPS.lat.toFixed(6) + ', ' + stats.rawGPS.lng.toFixed(6);
-                            if (rawAcc) {
-                                rawAcc.textContent = stats.rawGPS.accuracy.toFixed(1);
-                                rawAcc.style.color = stats.rawGPS.accuracy <= 30 ? '#388e3c' : (stats.rawGPS.accuracy <= 100 ? '#f57c00' : '#d32f2f');
-                            }
-                        }
-                        
-                        if (rejStats && stats.locationStats) {
-                            var ls = stats.locationStats;
-                            var parts = [];
-                            if (ls.accuracyRejections > 0) parts.push('Acc:' + ls.accuracyRejections);
-                            if (ls.geofenceRejections > 0) parts.push('Geo:' + ls.geofenceRejections);
-                            if (ls.speedRejections > 0) parts.push('Spd:' + ls.speedRejections);
-                            if (parts.length > 0) {
-                                rawSection.style.display = '';
-                                rejStats.textContent = parts.join(' | ');
-                            }
-                        }
-                        
-                        // Normal konum alınıyorsa ve reddedilmiyorsa gizle
-                        if (!stats.isRejected && !stats.rawGPS) {
-                            rawSection.style.display = 'none';
-                        }
                     }
 
                     // Altitude section gösterimi
@@ -627,5 +582,5 @@
         return new Extended(options);
     };
 
-    console.log('✅ SimpleLocate Extended loaded');
+    // SimpleLocate Extended loaded
 })();

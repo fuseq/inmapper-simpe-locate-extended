@@ -809,7 +809,7 @@
                 this._consecutiveBadLocations++;
                 // Alan dışındaki konumu son iyi konum olarak kaydetme!
                 if (!geofenceCheck.inside) {
-                    console.log(`🚫 Alan dışı konum son iyi konum olarak kaydedilmedi`);
+                    // Alan dışı konum son iyi konum olarak kaydedilmedi
                 }
             }
         },
@@ -852,7 +852,7 @@
             
             // Çok fazla kötü konum geldiyse zorla güncelle
             if (this._consecutiveBadLocations >= this.options.maxConsecutiveBadLocations) {
-                console.warn(`⚠️ ${this.options.maxConsecutiveBadLocations} ardışık kötü konum, zorla güncelleniyor`);
+                // Ardışık kötü konum limiti, zorla güncelleniyor
                 this._consecutiveBadLocations = 0;
                 return null;
             }
@@ -888,7 +888,7 @@
             // ========== POLYGON DESTEĞİ ==========
             if (options.polygon) {
                 this.options.geofencePolygon = options.polygon;
-                console.log('📐 Geofence polygon ayarlandı:', options.polygon.length, 'köşe');
+                // Geofence polygon ayarlandı
             }
             // Cache'i temizle
             this._geofenceCache.isInside = null;
@@ -913,13 +913,13 @@
                 position.accuracy > this.options.maxAcceptableAccuracy) {
                 
                 this._locationStats.accuracyRejections++;
-                console.warn(`⚠️ Accuracy çok yüksek: ${position.accuracy.toFixed(1)}m (max: ${this.options.maxAcceptableAccuracy}m) [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}]`);
+                // Accuracy çok yüksek - reddediliyor
                 
                 // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
                     const fallback = this._getLastGoodLocationFallback(position);
                     if (fallback) {
-                        console.log(`📍 Son iyi konum kullanılıyor (accuracy rejection)`);
+                        // Son iyi konum kullanılıyor (accuracy rejection)
                         return fallback;
                     }
                 }
@@ -934,11 +934,11 @@
             
             if (!geofenceResult.inside) {
                 this._locationStats.geofenceRejections++;
-                console.warn(`🚫 Geofence dışı: [${position.latitude.toFixed(6)}, ${position.longitude.toFixed(6)}] acc: ${position.accuracy.toFixed(1)}m`);
+                // Geofence dışı konum
                 
                 // ═══ PDR AKTİVASYONU ═══
                 if (this.options.enableDeadReckoning && !this._pdr.active) {
-                    console.log("🦶 Geofence dışı sinyal → PDR başlatılıyor");
+                    // Geofence dışı sinyal → PDR başlatılıyor
                     this._startDeadReckoning();
                 }
                 
@@ -957,7 +957,7 @@
                 if (this.options.enableLastGoodLocation) {
                     const fallback = this._getLastGoodLocationFallback(position);
                     if (fallback) {
-                        console.log(`📍 Son iyi konum kullanılıyor (geofence rejection)`);
+                        // Son iyi konum kullanılıyor (geofence rejection)
                         return fallback;
                     }
                 }
@@ -968,7 +968,7 @@
             
             // ═══ İÇ MEKAN SİNYALİ GERİ GELDİ → PDR DURDUR ═══
             if (this._pdr.active) {
-                console.log("🦶 İç mekan sinyali geri geldi → PDR durduruluyor");
+                // İç mekan sinyali geri geldi → PDR durduruluyor
                 this._stopDeadReckoning("iç mekan sinyali geri geldi");
             }
             
@@ -981,19 +981,19 @@
             
             if (!speedResult.valid) {
                 this._locationStats.speedRejections++;
-                console.warn(`⚠️ Hız ihlali: ${speedResult.message}`);
+                // Hız ihlali
                 
                 // Fallback kullan
                 if (this.options.enableLastGoodLocation) {
                     const fallback = this._getLastGoodLocationFallback(position);
                     if (fallback) {
-                        console.log(`📍 Son iyi konum kullanılıyor (speed rejection)`);
+                        // Son iyi konum kullanılıyor (speed rejection)
                         return fallback;
                     }
                 }
                 
                 // Fallback yoksa - null döndür (marker güncellenmeyecek)
-                console.warn(`🚫 Konum reddedildi (speed) - marker güncellenmeyecek`);
+                // Konum reddedildi (speed)
                 return null;
             }
             
@@ -1155,7 +1155,7 @@
 
                 }
             } else if (this.options.enableLowPassFilter !== false && typeof LowPassFilter === 'undefined') {
-                console.warn('⚠️ LowPassFilter kütüphanesi yüklenemedi, Low Pass Filter atlanıyor');
+                // LowPassFilter kütüphanesi yüklenemedi, atlanıyor
                 // Low Pass Filter olmadan devam et
                 lowPassFiltered = position;
             }
@@ -1404,8 +1404,7 @@
                         if (this.options.setViewAfterClick) this._setView();
                         this._watchGeolocation();
                         this._checkClickResult();
-                    }).catch((error) => {
-                        console.error('❌ Geolocation hatası:', error && error.message ? error.message : error);
+                    }).catch(() => {
                         this._geolocation = false;
                         this._checkClickResult();
                     });
@@ -1414,8 +1413,7 @@
                         this._orientation = true;
                         this._watchOrientation();
                         this._checkClickResult();
-                    }).catch((error) => {
-                        console.warn('🧭 Orientation izni reddedildi veya desteklenmiyor:', error || '');
+                    }).catch(() => {
                         this._orientation = false;
                         this._checkClickResult();
                     });
@@ -1551,11 +1549,6 @@
         },
 
         _watchGeolocation: function () {
-            console.log('📍 Geolocation izleme başlatılıyor...');
-            console.log('📍 Platform:', this._isIOS ? 'iOS' : 'Android/Diğer');
-            console.log('📍 Geofence:', this.options.geofence ? 'aktif' : 'yok');
-            console.log('📍 maxAcceptableAccuracy:', this.options.maxAcceptableAccuracy, 'm');
-            
             this._map.locate({ watch: true, enableHighAccuracy: true });
             this._map.on("locationfound", this._onLocationFound, this);
             this._map.on("locationerror", this._onLocationError, this);
@@ -1564,11 +1557,7 @@
         },
         
         _onLocationError: function (error) {
-            var msg = error && error.message ? error.message : (error || 'Bilinmeyen hata');
-            var code = error && error.code ? error.code : 0;
-            console.warn('📍 Konum hatası [code:' + code + ']:', msg);
-            
-            // Callback'i çağır - hata bilgisi ile
+            // Hata sessizce işlenir, callback ile bildirilir
             if (this.options.afterDeviceMove) {
                 this.options.afterDeviceMove({
                     lat: this._latitude,
@@ -1583,7 +1572,10 @@
                     locationStats: this._locationStats,
                     isFallback: false,
                     isIndoorMode: this.options.indoorMode,
-                    locationError: { code: code, message: msg }
+                    locationError: {
+                        code: error && error.code ? error.code : 0,
+                        message: error && error.message ? error.message : 'Bilinmeyen hata'
+                    }
                 });
             }
         },
@@ -1630,20 +1622,12 @@
         },
 
         _onLocationFound: function (event) {
-            // Ham GPS verisini logla (teşhis için)
-            console.log('📡 Ham GPS:', 
-                event.latitude ? event.latitude.toFixed(6) : '?', 
-                event.longitude ? event.longitude.toFixed(6) : '?',
-                'acc:', event.accuracy ? event.accuracy.toFixed(1) + 'm' : '?',
-                'alt:', event.altitude !== undefined && event.altitude !== null ? event.altitude.toFixed(1) + 'm' : 'yok'
-            );
-            
             // Wei Ye algoritması ile konumu filtrele
             const filteredPosition = this._applyWeiYeFilter(event);
             
             // Konum reddedildiyse (null döndü) - marker güncellenmez, circle gösterilmez
             if (!filteredPosition) {
-                console.log(`🚫 Reddedilen konum - marker ve circle gösterilmeyecek`);
+                // Reddedilen konum - marker ve circle gösterilmeyecek
 
                 // Ham konum bilgileri alınsa bile circle göstermiyoruz (kullanıcı talebi)
                 // Sadece varsa marker'ı kaldır
@@ -1673,15 +1657,7 @@
                         locationStats: this._locationStats,
                         isFallback: false,
                         isIndoorMode: this.options.indoorMode,
-                        consecutiveBadLocations: this._consecutiveBadLocations,
-                        // Ham GPS verisi (teşhis için)
-                        rawGPS: {
-                            lat: event.latitude,
-                            lng: event.longitude,
-                            accuracy: event.accuracy,
-                            altitude: event.altitude,
-                            altitudeAccuracy: event.altitudeAccuracy
-                        }
+                        consecutiveBadLocations: this._consecutiveBadLocations
                     });
                 }
                 return;
@@ -1695,7 +1671,7 @@
             // Bu, filtreleme sonrası konumun hala alan içinde olduğundan emin olur
             const finalGeofenceCheck = this._isInsideGeofence(filteredPosition.latitude, filteredPosition.longitude);
             if (!finalGeofenceCheck.inside) {
-                console.log(`🚫 Filtrelenmiş konum hala alan dışında - marker güncellenmeyecek, circle gri gösterilecek`);
+                // Filtrelenmiş konum hala alan dışında
                 this._locationStats.geofenceRejections++;
                 
                 // Konum bilgilerini kaydet (circle için)
@@ -1777,7 +1753,7 @@
                 try {
                     this._processAltitude(event);
                 } catch (e) {
-                    console.warn('⛰️ Altitude işleme hatası:', e.message);
+                    // Altitude işleme hatası
                 }
             }
 
@@ -1795,7 +1771,7 @@
                 // iOS: webkitCompassHeading direkt manyetik kuzey açısı verir (tilt-immune)
                 if (event.webkitCompassAccuracy !== undefined && event.webkitCompassAccuracy < 0) {
                     if (!this._compassUncalibratedWarned) {
-                        console.warn("🧭 Pusula kalibre edilmemiş. Cihazı 8 çizerek kalibre edin.");
+                        // Pusula kalibre edilmemiş
                         this._compassUncalibratedWarned = true;
                     }
                     return;
@@ -1973,7 +1949,7 @@
                 var altDelta = Math.abs(mslAltitude - this._altitude.filtered);
                 if (altDelta > this.options.altitudeMaxDelta) {
                     // Ani sıçrama - muhtemelen GPS hatası, yoksay
-                    console.warn('⛰️ Altitude sıçraması tespit edildi: ' + altDelta.toFixed(1) + 'm → yoksayıldı');
+                    // Altitude sıçraması tespit edildi → yoksayıldı
                     return;
                 }
             }
@@ -2104,8 +2080,7 @@
                 this._altitude.lastStableFloor = floor;
                 this._altitude.floorChangeTime = Date.now();
                 
-                console.log('🏢 Kat değişimi: ' + (prevFloor !== null ? prevFloor : '?') + 
-                           ' → ' + floor + ' (altitude: ' + altitude.toFixed(1) + 'm MSL)');
+                // Kat değişimi bildirimi - callback'ten izlenebilir
             }
         },
         
@@ -2142,7 +2117,7 @@
         // Zemin kat kalibrasyonu (cihaz zemin kattayken çağrılır)
         calibrateGroundFloor: function () {
             if (this._altitude.filtered === null) {
-                console.warn('⛰️ Kalibrasyon yapılamadı: Henüz altitude verisi yok');
+                // Kalibrasyon yapılamadı: altitude verisi yok
                 return null;
             }
             
@@ -2152,7 +2127,7 @@
             this._altitude.floorName = 'Kat ' + this.options.groundFloorNumber;
             this._altitude.lastStableFloor = this.options.groundFloorNumber;
             
-            console.log('⛰️ Zemin kat kalibre edildi: ' + groundAlt.toFixed(2) + 'm MSL');
+            // Zemin kat kalibre edildi
             return groundAlt;
         },
 
@@ -2171,7 +2146,7 @@
             var baseLng = this._longitude;
             
             if (!baseLat || !baseLng) {
-                console.warn("🦶 PDR başlatılamadı: geçerli konum yok");
+                // PDR başlatılamadı: geçerli konum yok
                 return;
             }
             
@@ -2196,7 +2171,7 @@
             
             window.addEventListener("devicemotion", this._pdr.motionHandler, false);
             
-            console.log("🦶 PDR başlatıldı - Baz konum:", baseLat.toFixed(6), baseLng.toFixed(6));
+            // PDR başlatıldı
             
             // Callback bildir
             if (this.options.afterDeviceMove) {
@@ -2222,9 +2197,7 @@
                 this._pdr.motionHandler = null;
             }
             
-            console.log("🦶 PDR durduruldu (" + (reason || "bilinmeyen") + ") - " + 
-                        this._pdr.stepCount + " adım, " + 
-                        ((Date.now() - this._pdr.startTime) / 1000).toFixed(1) + "s");
+            // PDR durduruldu
             
             this._pdr.active = false;
         },
@@ -2233,13 +2206,15 @@
         _onDeviceMotion: function (event) {
             if (!this._pdr.active) return;
             
-            // Zaman/adım limiti kontrolü
+            // Zaman/adım limiti kontrolü (0 veya Infinity = limitsiz)
             var now = Date.now();
-            if (now - this._pdr.startTime > this.options.pdrMaxDuration) {
+            if (this.options.pdrMaxDuration > 0 && this.options.pdrMaxDuration !== Infinity &&
+                now - this._pdr.startTime > this.options.pdrMaxDuration) {
                 this._stopDeadReckoning("süre limiti aşıldı");
                 return;
             }
-            if (this._pdr.stepCount >= this.options.pdrMaxSteps) {
+            if (this.options.pdrMaxSteps > 0 && this.options.pdrMaxSteps !== Infinity &&
+                this._pdr.stepCount >= this.options.pdrMaxSteps) {
                 this._stopDeadReckoning("adım limiti aşıldı");
                 return;
             }
@@ -2298,7 +2273,7 @@
             var heading = this._angle;
             if (heading === undefined || heading === null) {
                 // Heading yoksa PDR çalışamaz - son konumu koru
-                console.warn("🦶 PDR: Heading verisi yok, adım sayıldı ama konum güncellenemiyor");
+                // PDR: Heading verisi yok
                 return;
             }
             
@@ -2322,7 +2297,7 @@
             if (!geofenceCheck.inside) {
                 // Bina sınırına ulaşıldı - konum güncellenmez ama PDR devam eder
                 // (kullanıcı geri dönebilir)
-                console.log("🦶 PDR: Geofence sınırına ulaşıldı, konum güncellenmedi");
+                // PDR: Geofence sınırına ulaşıldı
                 return;
             }
             
@@ -2456,7 +2431,7 @@
             // ========== EK GÜVENLİK: MARKER GÜNCELLENİRKEN DE GEOFENCE KONTROLÜ ==========
             const markerGeofenceCheck = this._isInsideGeofence(this._latitude, this._longitude);
             if (!markerGeofenceCheck.inside) {
-                console.log(`🚫 Marker konumu yeni alan dışında - marker ve circle gizleniyor`);
+                // Marker konumu yeni alan dışında - gizleniyor
                 // Marker'ı gizle
                 if (this._marker) {
                     this._map.removeLayer(this._marker);
